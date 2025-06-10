@@ -1,12 +1,12 @@
 #include <WiFiNINA.h>
 #include <ArduinoHttpClient.h>
 #include <Arduino_LSM6DS3.h>
+#include <ArduinoJson.h>
 #include "env.h"
 
 WiFiClient wifiClient;
-HttpClient httpClient = HttpClient(wifiClient, THINGSBOARD_HOST, 8080); // use 443 for HTTPS (see below)
+HttpClient httpClient = HttpClient(wifiClient, THINGSBOARD_HOST, THINGSBOARD_PORT); // use 443 for HTTPS (see below)
 
-unsigned long lastSend = 0;
 
 void connectToWiFi() {
   Serial.print("Connecting to WiFi");
@@ -18,16 +18,19 @@ void connectToWiFi() {
 }
 
 void sendIMUData() {
-  float x, y, z;
+  JsonDocument doc;
 
   if (IMU.accelerationAvailable()) {
+
+
+    float x, y, z;
     IMU.readAcceleration(x, y, z);
 
-    String payload = "{";
-    payload += "\"accel_x\": " + String(x, 4) + ",";
-    payload += "\"accel_y\": " + String(y, 4) + ",";
-    payload += "\"accel_z\": " + String(z, 4);
-    payload += "}";
+    doc["accel_x"] = x;
+    doc["accel_y"] = y;
+    doc["accel_z"] = z;
+    String payload;
+    serializeJson(doc, payload);
 
     Serial.println("Sending payload:");
     Serial.println(payload);
@@ -42,12 +45,8 @@ void sendIMUData() {
     httpClient.print(payload);
 
     int statusCode = httpClient.responseStatusCode();
-    String response = httpClient.responseBody();
-
     Serial.print("Response code: ");
     Serial.println(statusCode);
-    Serial.print("Response: ");
-    Serial.println(response);
   }
 }
 
@@ -71,8 +70,6 @@ void loop() {
     connectToWiFi();
   }
 
-  if (millis() - lastSend > 10) {
-    sendIMUData();
-    lastSend = millis();
-  }
+  sendIMUData();
+  
 }
