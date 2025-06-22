@@ -21,23 +21,32 @@ ModulinoColor palette[] = {
 };
 
 float maxVel = 150;  // Maximum expected acceleration value
+float movementThreshold = 0.8; // Threshold to consider as movement
 
 int currentLevel = 0;  // Current LED level based on acceleration
 int numLEDs = 8;       // Number of LEDs in the strip
 int numButtons = 3;    // Number of buttons
 boolean isWalking = false; // Walking state
-
-
+boolean lastAnimationState = false; // false = still, true = walking
+long lastUpdateTime = 0;
+long lastMovementTime = 0;
+long movementTimeout = 5000; // 5 seconds timeout for movement detection
 
 void updateAnimation() {
+  if (isWalking == lastAnimationState)
+    return; // No change in animation state
 
-
-  if (!isWalking) {
-    isWalking = true;
+  if (isWalking) {
+    lastAnimationState = true;
     matrix.loadSequence(stickman_walking);
-    matrix.play(true); // Start the animation in loop mode
+  } else {
+    lastAnimationState = false;
+    matrix.loadSequence(stickman_standing);
   }
+  matrix.play(true);
+
 }
+
 
 void setup() {
   Serial.begin(115200);
@@ -69,6 +78,8 @@ void loop() {
     float gyroY = movement.getPitch();
     float gyroZ = movement.getYaw();
     
+    float gyroMagnitude = sqrt(gyroX * gyroX + gyroY * gyroY + gyroZ * gyroZ);
+
     // Debug output
     Serial.print("Accel X: ");
     Serial.print(accelX, 2);
@@ -84,11 +95,16 @@ void loop() {
     Serial.print(", Z: ");
     Serial.println(gyroZ, 2);
     
-    float verticalAccel = 1.0; // Default vertical acceleration threshold
     currentLevel = map(constrain(abs(gyroX), 0, maxVel), 0, maxVel, 0, numLEDs);
     
     Serial.print("LED Level: ");
     Serial.println(currentLevel);
+
+    if (gyroMagnitude > movementThreshold* maxVel) {
+      lastMovementTime = millis();
+    }
+    
+  
   }
   
   // Handle button presses
@@ -120,6 +136,13 @@ void loop() {
     }
   }
 
+  if (millis() - lastMovementTime > movementTimeout) {
+    isWalking = false; // No movement detected for a while, set to still
+  } else {
+    isWalking = true; // Movement detected
+  }
+
+  updateAnimation();
   
   leds.show();
   
