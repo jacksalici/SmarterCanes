@@ -16,9 +16,12 @@ ModulinoColor palette[] = {
 };
 
 float maxVel = 150;  // Maximum expected acceleration value
+
 int currentLevel = 0;  // Current LED level based on acceleration
 int numLEDs = 8;       // Number of LEDs in the strip
 int numButtons = 3;    // Number of buttons
+
+
 
 void setup() {
   Serial.begin(115200);
@@ -71,27 +74,28 @@ void loop() {
   
   // Handle button presses
   if (buttons.update()) {
+    boolean buttonPressed = false;
     for (int i = 0; i < numButtons; i++) {
       if (buttons.isPressed(i)) {
-        ModulinoColor buttonColor = ModulinoColor(0, 255, 0); 
         
-        leds.set(numLEDs - 1, buttonColor, 50 + (i * 30));
-        
+        leds.set(numLEDs - 1,  ModulinoColor(0, 255, 255), 50+ i * 50); // Set last LED for button feedback
+        buttonPressed = true;
         Serial.print("Button ");
         Serial.print(i);
         Serial.println(" pressed");
       }
-      else {
+    }
+    if (!buttonPressed) {
         leds.clear(numLEDs - 1);
       }
-    }
+    
   }
   
   for (int i = 0; i < numLEDs - 1; i++) { // Reserve last LED for buttons
     int ledIndex = (numLEDs - 2) - i; // Light up LEDs from bottom (index 6) to top (index 0)
 
     if (i < currentLevel) {
-      leds.set(ledIndex, palette[i], 20);
+      leds.set(ledIndex, palette[i], 10);
     } else {
       leds.clear(ledIndex);
     }
