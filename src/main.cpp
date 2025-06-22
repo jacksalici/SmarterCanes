@@ -1,75 +1,104 @@
-#include <WiFiNINA.h>
-#include <ArduinoHttpClient.h>
-#include <Arduino_LSM6DS3.h>
-#include <ArduinoJson.h>
-#include "env.h"
+#include <Arduino.h>
+#include <Modulino.h>
 
-WiFiClient wifiClient;
-HttpClient httpClient = HttpClient(wifiClient, THINGSBOARD_HOST, THINGSBOARD_PORT); // use 443 for HTTPS (see below)
+ModulinoButtons buttons;
+ModulinoPixels leds;
+ModulinoMovement movement;
 
+ModulinoColor palette[] = {
+  ModulinoColor(255, 255, 0),   
+  ModulinoColor(255, 210, 0),   
+  ModulinoColor(255, 170, 0),  
+  ModulinoColor(255, 130, 0),  
+  ModulinoColor(255, 90, 0),  
+  ModulinoColor(255, 45, 0),  
+  ModulinoColor(255, 0, 0),  
+};
 
-void connectToWiFi() {
-  Serial.print("Connecting to WiFi");
-  while (WiFi.begin(WIFI_SSID, WIFI_PASSWORD) != WL_CONNECTED) {
-    Serial.print(".");
-    delay(1000);
-  }
-  Serial.println(" connected.");
-}
-
-void sendIMUData() {
-  JsonDocument doc;
-
-  if (IMU.accelerationAvailable()) {
-
-
-    float x, y, z;
-    IMU.readAcceleration(x, y, z);
-
-    doc["accel_x"] = x;
-    doc["accel_y"] = y;
-    doc["accel_z"] = z;
-    String payload;
-    serializeJson(doc, payload);
-
-    Serial.println("Sending payload:");
-    Serial.println(payload);
-
-    String path = "/api/v1/" + String(THINGSBOARD_TOKEN) + "/telemetry";
-
-    httpClient.beginRequest();
-    httpClient.post(path);
-    httpClient.sendHeader("Content-Type", "application/json");
-    httpClient.sendHeader("Content-Length", payload.length());
-    httpClient.endRequest();
-    httpClient.print(payload);
-
-    int statusCode = httpClient.responseStatusCode();
-    Serial.print("Response code: ");
-    Serial.println(statusCode);
-  }
-}
+float maxVel = 150;  // Maximum expected acceleration value
+int currentLevel = 0;  // Current LED level based on acceleration
+int numLEDs = 8;       // Number of LEDs in the strip
+int numButtons = 3;    // Number of buttons
 
 void setup() {
-  Serial.begin(9600);
-  while (!Serial);
-
-  // Connect to WiFi
-  connectToWiFi();
-
-  // Initialize IMU
-  if (!IMU.begin()) {
-    Serial.println("Failed to initialize IMU!");
-    while (1);
-  }
-  Serial.println("IMU initialized.");
+  Serial.begin(115200);
+  
+  // Initialize Modulino system
+  Modulino.begin();
+  buttons.begin();
+  leds.begin();
+  movement.begin();
+  
+  // Clear all LEDs at startup
+  leds.clear();
+  leds.show();
+  
+  Serial.println("Modulino system initialized");
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    connectToWiFi();
+  // Update movement sensor and map acceleration to LED levels
+  if (movement.update()) {
+    float accelX = movement.getX();
+    float accelY = movement.getY();
+    float accelZ = movement.getZ();
+
+    float gyroX = movement.getRoll();
+    float gyroY = movement.getPitch();
+    float gyroZ = movement.getYaw();
+    
+    // Debug output
+    Serial.print("Accel X: ");
+    Serial.print(accelX, 2);
+    Serial.print(", Y: ");
+    Serial.print(accelY, 2);
+    Serial.print(", Z: ");
+    Serial.println(accelZ, 2);
+
+    Serial.print("Gyro X: ");
+    Serial.print(gyroX, 2);
+    Serial.print(", Y: ");
+    Serial.print(gyroY, 2);
+    Serial.print(", Z: ");
+    Serial.println(gyroZ, 2);
+    
+    float verticalAccel = 1.0; // Default vertical acceleration threshold
+    currentLevel = map(constrain(abs(gyroX), 0, maxVel), 0, maxVel, 0, numLEDs);
+    
+    Serial.print("LED Level: ");
+    Serial.println(currentLevel);
+  }
+  
+  // Handle button presses
+  if (buttons.update()) {
+    for (int i = 0; i < numButtons; i++) {
+      if (buttons.isPressed(i)) {
+        ModulinoColor buttonColor = ModulinoColor(0, 255, 0); 
+        
+        leds.set(numLEDs - 1, buttonColor, 50 + (i * 30));
+        
+        Serial.print("Button ");
+        Serial.print(i);
+        Serial.println(" pressed");
+      }
+      else {
+        leds.clear(numLEDs - 1);
+      }
+    }
+  }
+  
+  for (int i = 0; i < numLEDs - 1; i++) { // Reserve last LED for buttons
+    int ledIndex = (numLEDs - 2) - i; // Light up LEDs from bottom (index 6) to top (index 0)
+
+    if (i < currentLevel) {
+      leds.set(ledIndex, palette[i], 20);
+    } else {
+      leds.clear(ledIndex);
+    }
   }
 
-  sendIMUData();
   
+  leds.show();
+  
+  delay(50);
 }
