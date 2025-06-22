@@ -1,9 +1,14 @@
 #include <Arduino.h>
 #include <Modulino.h>
+#include <Arduino_LED_Matrix.h>
+
+#include <animations.h>
 
 ModulinoButtons buttons;
 ModulinoPixels leds;
 ModulinoMovement movement;
+ArduinoLEDMatrix matrix;
+
 
 ModulinoColor palette[] = {
   ModulinoColor(255, 255, 0),   
@@ -20,8 +25,19 @@ float maxVel = 150;  // Maximum expected acceleration value
 int currentLevel = 0;  // Current LED level based on acceleration
 int numLEDs = 8;       // Number of LEDs in the strip
 int numButtons = 3;    // Number of buttons
+boolean isWalking = false; // Walking state
 
 
+
+void updateAnimation() {
+
+
+  if (!isWalking) {
+    isWalking = true;
+    matrix.loadSequence(stickman_walking);
+    matrix.play(true); // Start the animation in loop mode
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -36,7 +52,10 @@ void setup() {
   leds.clear();
   leds.show();
   
-  Serial.println("Modulino system initialized");
+  matrix.begin();
+  matrix.loadSequence(stickman_walking);
+  matrix.play(true); // Start the animation in loop mode
+  
 }
 
 void loop() {
