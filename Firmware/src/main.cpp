@@ -64,6 +64,12 @@ void updateAnimation()
   if (isWalking == lastAnimationState)
     return; // No change in animation state
   
+  if (!playAnimation)
+  {
+    if (!matrix.sequenceDone())
+      matrix.play(false);
+    return; // Animation playback is disabled
+  }
 
   if (isWalking)
   {
