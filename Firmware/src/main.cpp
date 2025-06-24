@@ -11,8 +11,9 @@ ModulinoMovement movement;
 ArduinoLEDMatrix matrix;
 
 // BLE Service and Characteristic UUIDs
-BLEService sensorService("12345678-1234-1234-1234-123456789abc");
-BLEStringCharacteristic sensorData("87654321-4321-4321-4321-cba987654321", BLERead | BLENotify, 50);
+BLEService sensorService("eb7f25c3-8d96-4311-92c9-45e90f6b6f5b");
+BLEStringCharacteristic sensorGyroData("a94090de-f49a-49f4-97c0-a95abc6cbb95", BLERead | BLENotify, 50);
+BLEStringCharacteristic sensorAccelData("ca52c70a-3eb6-4043-add4-df23393e387f", BLERead | BLENotify, 50);
 
 ModulinoColor palette[] = {
     ModulinoColor(255, 255, 0),
@@ -38,12 +39,11 @@ long lastMovementTime = 0;
 long movementTimeout = 5000;
 
 long lastSendTime = 0;
-long sendInterval = 2000; // Increased to 2 seconds for better stability
+long sendInterval = 50; 
 
 boolean bleInitialized = false; // BLE initialization state
 boolean isConnected = false;     // Track connection state
 
-// BLE Event Handlers
 void onBLEConnected(BLEDevice central) {
   Serial.print("Connected to central: ");
   Serial.println(central.address());
@@ -54,7 +54,7 @@ void onBLEDisconnected(BLEDevice central) {
   Serial.print("Disconnected from central: ");
   Serial.println(central.address());
   isConnected = false;
-  // Restart advertising automatically
+
   BLE.advertise();
   Serial.println("Restarted advertising after disconnect");
 }
@@ -96,24 +96,19 @@ boolean initBLE()
   BLE.setLocalName("Better Walking Cane");
   BLE.setDeviceName("Better Walking Cane");
 
-  // Set connection parameters for better stability
   BLE.setConnectionInterval(0x0006, 0x0C80); // 7.5ms to 4s
   BLE.setSupervisionTimeout(0x0C80); // 20 seconds
 
   BLE.setAdvertisedService(sensorService);
-  sensorService.addCharacteristic(sensorData);
+  sensorService.addCharacteristic(sensorGyroData);
+  sensorService.addCharacteristic(sensorAccelData);
 
-  // Add service
   BLE.addService(sensorService);
 
-  // Set initial value
-  sensorData.writeValue("Ready");
-
-  // Add event handlers
   BLE.setEventHandler(BLEConnected, onBLEConnected);
   BLE.setEventHandler(BLEDisconnected, onBLEDisconnected);
-  BLE.setPairable(1);
-  // Start advertising
+  BLE.setPairable(1); 
+
   BLE.advertise();
   Serial.println("BLE device is now advertising...");
   return true;
@@ -123,14 +118,24 @@ void sendBLE(float accelX, float accelY, float accelZ, float gyroX, float gyroY,
 {
   if (isConnected && BLE.connected())
   {
-    String jsonData = String(accelX, 2) + "," + String(accelY, 2) + "," + String(accelZ, 2);
-    
-    // Check data length to prevent buffer overflow
-    if (jsonData.length() < 50) {
-      sensorData.writeValue(jsonData);
-      Serial.println("Sent: " + jsonData);
+    String accelData = String(accelX, 3) + "," + String(accelY, 3) + "," + String(accelZ, 3);
+    String gyroData = String(gyroX, 3) + "," + String(gyroY, 3) + "," + String(gyroZ, 3);
+
+
+
+
+    if (accelData.length() < 50) {
+      sensorAccelData.writeValue(accelData);
+      Serial.println("Sent: " + accelData);
     } else {
-      Serial.println("Data too long (" + String(jsonData.length()) + " chars), skipping send");
+      Serial.println("Data too long (" + String(accelData.length()) + " chars), skipping send");
+    }
+
+    if (gyroData.length() < 50) {
+      sensorGyroData.writeValue(gyroData);
+      Serial.println("Sent: " + gyroData);
+    } else {
+      Serial.println("Data too long (" + String(gyroData.length()) + " chars), skipping send");
     }
   } else if (!isConnected) {
     Serial.println("BLE not connected, skipping data send");
@@ -172,7 +177,6 @@ void setup()
 
 void loop()
 {
-  // Poll BLE more frequently for better connection stability
   BLE.poll(); 
   
   if (movement.update())
@@ -187,9 +191,8 @@ void loop()
 
     float gyroMagnitude = sqrt(gyroX * gyroX + gyroY * gyroY + gyroZ * gyroZ);
 
-    // Debug output (reduce frequency to avoid flooding serial)
     static long lastDebugTime = 0;
-    if (millis() - lastDebugTime > 500) { // Debug every 500ms
+    if (millis() - lastDebugTime > 500) { 
       lastDebugTime = millis();
       Serial.print("Accel X: ");
       Serial.print(accelX, 2);
