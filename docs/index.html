@@ -30,7 +30,7 @@
     <header class="bg-gray-800 shadow-lg">
         <nav class="container mx-auto px-6 py-4">
             <div class="flex items-center justify-between">
-                <div class="font-serif text-2xl font-bold text-white">
+                <div class="font-serif text-xl font-bold text-white">
                     Better Walking Cane
                 </div>
                 <div class="hidden md:flex space-x-8">
@@ -46,7 +46,7 @@
                     <!-- Modal -->
                     <div id="mobile-menu-modal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 hidden">
                         <div class="bg-gray-800 rounded-lg shadow-lg p-8 w-80 relative">
-                            <button id="close-modal" class="absolute top-2 right-2 text-gray-400 hover:text-white text-2xl font-bold">&times;</button>
+                            <button id="close-modal" class="absolute top-2 right-2 text-gray-400 hover:text-white text-xl font-bold">&times;</button>
                             <nav class="flex flex-col space-y-6 mt-4">
                                 <a href="#about" class="font-mono text-gray-300 hover:text-white transition-colors" onclick="closeModal()">About</a>
                                 <a href="#features" class="font-mono text-gray-300 hover:text-white transition-colors" onclick="closeModal()">Features</a>
@@ -82,17 +82,17 @@
         <div class="grid md:grid-cols-2 gap-12 items-center">
 
             <div>
-                    <h1 class="text-5xl md:text-7xl font-serif font-bold text-white mb-6">
+                    <h1 class="text-4xl md:text-5xl font-serif font-bold text-white mb-6">
                         Better Walking Cane
                     </h1>
-                    <p class="text-xl md:text-3xl text-gray-300 font-mono mb-12">
+                    <p class="text-lg md:text-xl font-mono mb-12">
                         A smart cane for safer and more connected mobility to bridge the gap between innovation and accessibility.
                     </p>
               
-                <p class="text-lg text-gray-300 leading-relaxed mb-6 font-mono">
+                <p class="leading-relaxed mb-6 font-mono">
                     Traditional step counters integrated in smartwatches and fitness trackers fail when it comes to atypical or assisted walking patterns. Our smart quadripod cane integrates sensors and movement recognition algorithms capable of identifying real steps while filtering out static supports and noise.
                 </p>
-                <p class="text-lg text-gray-300 leading-relaxed font-mono">
+                <p class="leading-relaxed font-mono">
                     Designed for elderly people, individuals with motor disabilities, or those in rehabilitation, this device enables precise monitoring of physical activity, promoting health, awareness, and autonomy.
                 </p>
             </div>
@@ -104,7 +104,7 @@
     <!-- Features Section -->
     <section id="features" class="bg-gray-800 py-16">
         <div class="container mx-auto px-6">
-            <h2 class="text-4xl font-serif font-bold text-center text-white mb-12">
+            <h2 class="text-3xl font-serif font-bold text-center text-white mb-12">
                 What Makes It Special
             </h2>
             <div class="grid md:grid-cols-3 gap-8">
@@ -112,21 +112,21 @@
                     <div class="flex justify-center mb-4 relative">
                         <img src="data.png" alt="Data Collection" class="h-64 w-full object-cover rounded-lg mx-auto transition-all duration-300" />
                     </div>
-                    <h3 class="text-xl font-serif font-bold text-white mb-3">Smart Recognition</h3>
+                    <h3 class="text-lg font-serif font-bold text-white mb-3">Smart Recognition</h3>
                     <p class="text-gray-300 font-mono">Advanced algorithms distinguish real steps from simple supports, providing accurate activity monitoring for assisted walking.</p>
                 </div>
                 <div class="text-center p-6 rounded-lg bg-gray-700 border border-gray-600 hover:bg-gray-600 transition-colors group cursor-pointer">
                     <div class="flex justify-center mb-4 relative">
                         <img src="cad.png" alt="3D Printed Design" class="h-64 w-full object-cover rounded-lg mx-auto transition-all duration-300" />
                     </div>
-                    <h3 class="text-xl font-serif font-bold text-white mb-3">Universal Compatibility</h3>
+                    <h3 class="text-lg font-serif font-bold text-white mb-3">Universal Compatibility</h3>
                     <p class="text-gray-300 font-mono">3d printed design that can be adapted for any standard quadripod cane, making it accessible to existing users.</p>
                 </div>
                 <div class="text-center p-6 rounded-lg bg-gray-700 border border-gray-600 hover:bg-gray-600 transition-colors group cursor-pointer">
                     <div class="flex justify-center mb-4 relative">
                         <img src="https://store.arduino.cc/cdn/shop/collections/Arduino_Store_-_Collection_Cover_1950x549_1_555fad1c-9018-4444-ad0d-cec73e7e5a08_1593x448.jpg" alt="Arduino Modulino" class="h-64 w-full object-cover rounded-lg mx-auto transition-all duration-300" />
                     </div>
-                    <h3 class="text-xl font-serif font-bold text-white mb-3">Open Source</h3>
+                    <h3 class="text-lg font-serif font-bold text-white mb-3">Open Source</h3>
                     <p class="text-gray-300 font-mono">Transparent development focused on accessibility and continuous improvement. Plug and play thanks to Arduino Modulino®</p>
                 </div>
             </div>
@@ -136,13 +136,14 @@
     <!-- Project Status -->
     <section id="status" class="py-16 bg-gray-900">
         <div class="container mx-auto px-6 text-center">
-            <h2 class="text-4xl font-serif font-bold text-white mb-8">
+            <h2 class="text-3xl font-serif font-bold text-white mb-8">
                 Project Status
             </h2>
+            <img src="render.png" alt="Project Render" class="max-w-3xl mx-auto mb-8">
             <div class="max-w-3xl mx-auto">
                 <div class="bg-gray-800 border border-gray-700 rounded-lg p-8 mb-8">
-                    <h3 class="text-2xl font-serif font-bold text-blue-400 mb-4">Currently in Development</h3>
-                    <p class="text-lg text-gray-300 leading-relaxed font-mono">
+                    <h3 class="text-2xl font-mono font-bold text-blue-400 mb-4">A Work in Progress</h3>
+                    <p class=" text-gray-300 leading-relaxed font-mono">
                         The project is in the prototyping phase. Initial tests with accelerometers and step classification models are underway. Next steps include validation with different users, time series analysis, integration with a companion app, and system battery optimization.
                     </p>
                 </div>
@@ -168,27 +169,27 @@
     <section id="contacts" class="py-16 bg-gray-800">
         <div class="container mx-auto px-6">
             <div class="max-w-4xl mx-auto text-center">
-                <h2 class="text-4xl font-serif font-bold text-white mb-8">
+                <h2 class="text-3xl font-serif font-bold text-white mb-8">
                     About the Creator
                 </h2>
                 <div class="bg-gray-700 rounded-lg p-8 shadow-xl border border-gray-600">
                     <img src="https://media.licdn.com/dms/image/v2/C4D03AQGlPbGYTY9_bw/profile-displayphoto-shrink_800_800/profile-displayphoto-shrink_800_800/0/1660150279465?e=1756339200&v=beta&t=utmid0lNiUduepOkDeJrUuyC-0xXSsqc_94O_Av8PJI" alt="Giacomo Salici" class="w-32 h-32 rounded-full mx-auto mb-6 border-4 border-blue-500">
-                    <h3 class="text-2xl font-serif font-bold text-white mb-4">Ing. Giacomo Salici</h3>
-                    <p class="text-lg text-gray-300 leading-relaxed font-mono">
-                        Hi! I am a PhD student in ICT withing the AImageLab Research Group. My research topics include time series forecasting, anomaly prediction, and AIoT (Artificial Intelligence of Things).
+                    <h3 class="text-xl font-mono font-bold text-white mb-4">Giacomo Salici</h3>
+                    <p class="max-w-lg mx-auto text-gray-300 leading-relaxed font-mono">
+                        Hi! I am a PhD student in ICT withing the AImageLab Research Group of the University of Modena and Reggio Emilia. My research topics include time series analysis and forecasting, anomaly detection and predictive maintenance, and AIoT (Artificial Intelligence of Things).
                     </p>
                     <div class="flex flex-col md:flex-row justify-center gap-4 mt-6">
-                        <a href="https://www.linkedin.com/in/giacomo-salici/"
-                           class="bg-blue-500 hover:bg-blue-600 text-white font-mono py-2 px-6 rounded transition-colors text-lg"
+                        <a href="https://www.linkedin.com/in/jacksalici/"
+                           class="bg-blue-500 hover:bg-blue-600 text-white font-mono py-2 px-6 rounded transition-colors"
                            target="_blank" rel="noopener">
                             Let's Connect
                         </a>
                         <a href="mailto:giacomo.salici@unimore.it"
-                           class="bg-blue-500 hover:bg-blue-600 text-white font-mono py-2 px-6 rounded transition-colors text-lg">
+                           class="bg-blue-500 hover:bg-blue-600 text-white font-mono py-2 px-6 rounded transition-colors">
                             Get in Touch
                         </a>
                         <a href="https://jacksalici.com"
-                            class="bg-gray-500 hover:bg-blue-600 text-white font-mono py-2 px-6 rounded transition-colors text-lg">
+                            class="bg-gray-500 hover:bg-blue-600 text-white font-mono py-2 px-6 rounded transition-colors">
                               Visit My Website
 
 
