@@ -32,25 +32,27 @@ int currentLevel = 0;
 int numLEDs = 8;
 int numButtons = 3;
 boolean isWalking = false;          // Walking state
-boolean lastAnimationState = false; // false = still, true = walking
-boolean playAnimation = true; // Control animation playback
+boolean lastAnimationState = true; // false = still, true = walking
+boolean playAnimation = true;       // Control animation playback
 long lastUpdateTime = 0;
 long lastMovementTime = 0;
 long movementTimeout = 5000;
 
 long lastSendTime = 0;
-long sendInterval = 50; 
+long sendInterval = 50;
 
 boolean bleInitialized = false; // BLE initialization state
-boolean isConnected = false;     // Track connection state
+boolean isConnected = false;    // Track connection state
 
-void onBLEConnected(BLEDevice central) {
+void onBLEConnected(BLEDevice central)
+{
   Serial.print("Connected to central: ");
   Serial.println(central.address());
   isConnected = true;
 }
 
-void onBLEDisconnected(BLEDevice central) {
+void onBLEDisconnected(BLEDevice central)
+{
   Serial.print("Disconnected from central: ");
   Serial.println(central.address());
   isConnected = false;
@@ -59,11 +61,13 @@ void onBLEDisconnected(BLEDevice central) {
   Serial.println("Restarted advertising after disconnect");
 }
 
+int state = 0; // state machine for walking animation
+
 void updateAnimation()
 {
   if (isWalking == lastAnimationState)
     return; // No change in animation state
-  
+
   if (!playAnimation)
   {
     if (!matrix.sequenceDone())
@@ -97,7 +101,7 @@ boolean initBLE()
   BLE.setDeviceName("Better Walking Cane");
 
   BLE.setConnectionInterval(0x0006, 0x0C80); // 7.5ms to 4s
-  BLE.setSupervisionTimeout(0x0C80); // 20 seconds
+  BLE.setSupervisionTimeout(0x0C80);         // 20 seconds
 
   BLE.setAdvertisedService(sensorService);
   sensorService.addCharacteristic(sensorGyroData);
@@ -107,7 +111,7 @@ boolean initBLE()
 
   BLE.setEventHandler(BLEConnected, onBLEConnected);
   BLE.setEventHandler(BLEDisconnected, onBLEDisconnected);
-  BLE.setPairable(1); 
+  BLE.setPairable(1);
 
   BLE.advertise();
   Serial.println("BLE device is now advertising...");
@@ -121,34 +125,32 @@ void sendBLE(float accelX, float accelY, float accelZ, float gyroX, float gyroY,
     String accelData = String(accelX, 3) + "," + String(accelY, 3) + "," + String(accelZ, 3);
     String gyroData = String(gyroX, 3) + "," + String(gyroY, 3) + "," + String(gyroZ, 3);
 
-
-
-
-    if (accelData.length() < 50) {
+    if (accelData.length() < 50)
+    {
       sensorAccelData.writeValue(accelData);
-      Serial.println("Sent: " + accelData);
-    } else {
+    }
+    else
+    {
       Serial.println("Data too long (" + String(accelData.length()) + " chars), skipping send");
     }
 
-    if (gyroData.length() < 50) {
+    if (gyroData.length() < 50)
+    {
       sensorGyroData.writeValue(gyroData);
-      Serial.println("Sent: " + gyroData);
-    } else {
+    }
+    else
+    {
       Serial.println("Data too long (" + String(gyroData.length()) + " chars), skipping send");
     }
-  } else if (!isConnected) {
-    Serial.println("BLE not connected, skipping data send");
   }
 }
 
 void setup()
 {
   Serial.begin(115200);
-  
+
   // Wait a moment for serial to initialize
   delay(1000);
-  Serial.println("Starting Better Walking Cane...");
 
   // Initialize Modulino system
   Modulino.begin();
@@ -162,23 +164,27 @@ void setup()
 
   matrix.begin();
   matrix.loadSequence(stickman_standing); // Start with standing animation
-  matrix.play(true); // Start the animation in loop mode
+  matrix.play(true);                      // Start the animation in loop mode
 
   bleInitialized = initBLE(); // Initialize BLE
-  
-  if (bleInitialized) {
+
+  if (bleInitialized)
+  {
     Serial.println("BLE initialized successfully");
-  } else {
+  }
+  else
+  {
     Serial.println("BLE initialization failed");
   }
-  
+
+
   Serial.println("Setup complete!");
 }
 
 void loop()
 {
-  BLE.poll(); 
-  
+  BLE.poll();
+
   if (movement.update())
   {
     float accelX = movement.getX();
@@ -190,24 +196,6 @@ void loop()
     float gyroZ = movement.getYaw();
 
     float gyroMagnitude = sqrt(gyroX * gyroX + gyroY * gyroY + gyroZ * gyroZ);
-
-    static long lastDebugTime = 0;
-    if (millis() - lastDebugTime > 500) { 
-      lastDebugTime = millis();
-      Serial.print("Accel X: ");
-      Serial.print(accelX, 2);
-      Serial.print(", Y: ");
-      Serial.print(accelY, 2);
-      Serial.print(", Z: ");
-      Serial.println(accelZ, 2);
-
-      Serial.print("Gyro X: ");
-      Serial.print(gyroX, 2);
-      Serial.print(", Y: ");
-      Serial.print(gyroY, 2);
-      Serial.print(", Z: ");
-      Serial.println(gyroZ, 2);
-    }
 
     currentLevel = map(constrain(abs(gyroX), 0, maxVel), 0, maxVel, 0, numLEDs);
 
@@ -237,6 +225,13 @@ void loop()
         Serial.print("Button ");
         Serial.print(i);
         Serial.println(" pressed");
+
+        if (i == 0) // Button A
+        {
+          // change status
+          state = (state + 1) % 3; // Cycle through 0, 1, 2
+          Serial.println("State changed to: " + String(state));
+        }
       }
     }
     if (!buttonPressed)
@@ -245,33 +240,75 @@ void loop()
     }
   }
 
-  // Update LED strip based on movement level
-  for (int i = 0; i < numLEDs - 1; i++)
-  {                                   
-    int ledIndex = (numLEDs - 2) - i; // Light up LEDs from bottom (index 6) to top (index 0)
-
-    if (i < currentLevel)
+  // Handle different states
+  if (state == 0)
+  {
+    // Normal mode: LED strip based on movement level
+    for (int i = 0; i < numLEDs - 1; i++)
     {
-      leds.set(ledIndex, palette[i], 10);
+      int ledIndex = (numLEDs - 2) - i; // Light up LEDs from bottom (index 6) to top (index 0)
+
+      if (i < currentLevel)
+      {
+        leds.set(ledIndex, palette[i], 10);
+      }
+      else
+      {
+        leds.clear(ledIndex);
+      }
+    }
+
+    // Determine walking state based on recent movement
+    if (millis() - lastMovementTime > movementTimeout)
+    {
+      isWalking = false; // No movement detected for a while, set to still
     }
     else
     {
-      leds.clear(ledIndex);
+      isWalking = true;
+    }
+
+    // Update animation based on walking state
+    updateAnimation();
+  }
+  else if (state == 1)
+  {
+    // State 1: All LEDs always on, animation always walking
+    for (int i = 0; i < numLEDs - 1; i++)
+    {
+      int ledIndex = (numLEDs - 2) - i; // Light up LEDs from bottom (index 6) to top (index 0)
+      leds.set(ledIndex, palette[i], 10);
+    }
+    leds.set(numLEDs - 1, ModulinoColor(0, 255, 255), 10);
+
+    // Force walking animation
+    if (!isWalking || lastAnimationState != true)
+    {
+      isWalking = true;
+      lastAnimationState = true;
+      matrix.loadSequence(stickman_walking);
+      matrix.play(true);
     }
   }
-
-  // Determine walking state based on recent movement
-  if (millis() - lastMovementTime > movementTimeout)
+  else if (state == 2)
   {
-    isWalking = false; // No movement detected for a while, set to still
+    // State 2
+    // For now, turn off all LEDs and stop animation
+    for (int i = 0; i < numLEDs - 1; i++)
+    {
+      int ledIndex = (numLEDs - 2) - i;
+      leds.clear(ledIndex);
+    }
+    
+    // Force standing animation
+    if (isWalking || lastAnimationState != false)
+    {
+      isWalking = false;
+      lastAnimationState = false;
+      matrix.loadSequence(stickman_standing);
+      matrix.play(true);
+    }
   }
-  else
-  {
-    isWalking = true; 
-  }
-
-  // Update animation based on walking state
-  updateAnimation();
 
   // Update LED display
   leds.show();
