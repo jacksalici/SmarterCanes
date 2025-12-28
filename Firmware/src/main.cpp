@@ -14,6 +14,10 @@ BLEStringCharacteristic sensorGyroData("a94090de-f49a-49f4-97c0-a95abc6cbb95", B
 BLEStringCharacteristic sensorAccelData("ca52c70a-3eb6-4043-add4-df23393e387f", BLERead | BLENotify, 50);
 BLEStringCharacteristic sensorEnvData("d3e4f5a6-7b8c-9d0e-1f2a-3b4c5d6e7f8a", BLERead | BLENotify, 100);
 
+BLEDescriptor gyroDescriptor("2901", "Gyroscope Data");
+BLEDescriptor accelDescriptor("2902", "Accelerometer Data");
+BLEDescriptor envDescriptor("2903", "Environmental Data");
+
 float maxVel = 150;            // Maximum expected rotation value
 float movementThreshold = 0.8; // Threshold to consider as movement
 
@@ -56,6 +60,11 @@ boolean initBLE()
   BLE.setSupervisionTimeout(0x0C80);         // 20 seconds
 
   BLE.setAdvertisedService(customSensorService);
+
+  sensorAccelData.addDescriptor(accelDescriptor);
+  sensorGyroData.addDescriptor(gyroDescriptor);
+  sensorEnvData.addDescriptor(envDescriptor);
+
   customSensorService.addCharacteristic(sensorGyroData);
   customSensorService.addCharacteristic(sensorAccelData);
   customSensorService.addCharacteristic(sensorEnvData);
