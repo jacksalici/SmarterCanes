@@ -9,7 +9,7 @@ Sensor humidity(SENSOR_ID_HUM);
 Sensor pressure(SENSOR_ID_BARO);
 Sensor gas(SENSOR_ID_GAS);
 
-BLEService sensorService("eb7f25c3-8d96-4311-92c9-45e90f6b6f5b");
+BLEService customSensorService("eb7f25c3-8d96-4311-92c9-45e90f6b6f5b");
 BLEStringCharacteristic sensorGyroData("a94090de-f49a-49f4-97c0-a95abc6cbb95", BLERead | BLENotify, 50);
 BLEStringCharacteristic sensorAccelData("ca52c70a-3eb6-4043-add4-df23393e387f", BLERead | BLENotify, 50);
 BLEStringCharacteristic sensorEnvData("d3e4f5a6-7b8c-9d0e-1f2a-3b4c5d6e7f8a", BLERead | BLENotify, 100);
@@ -55,12 +55,12 @@ boolean initBLE()
   BLE.setConnectionInterval(0x0006, 0x0C80); // 7.5ms to 4s
   BLE.setSupervisionTimeout(0x0C80);         // 20 seconds
 
-  BLE.setAdvertisedService(sensorService);
-  sensorService.addCharacteristic(sensorGyroData);
-  sensorService.addCharacteristic(sensorAccelData);
-  sensorService.addCharacteristic(sensorEnvData);
+  BLE.setAdvertisedService(customSensorService);
+  customSensorService.addCharacteristic(sensorGyroData);
+  customSensorService.addCharacteristic(sensorAccelData);
+  customSensorService.addCharacteristic(sensorEnvData);
 
-  BLE.addService(sensorService);
+  BLE.addService(customSensorService);
 
   BLE.setEventHandler(BLEConnected, onBLEConnected);
   BLE.setEventHandler(BLEDisconnected, onBLEDisconnected);
