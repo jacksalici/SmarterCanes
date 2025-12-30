@@ -2,6 +2,10 @@
 #include <ArduinoBLE.h>
 #include <Arduino_BHY2.h>
 
+#undef NICLA_BLE_AND_I2C
+#define NICLA_BLE_AND_I2C NICLA_I2C
+
+
 SensorXYZ gyroscope(SENSOR_ID_GYRO);
 SensorXYZ accelerometer(SENSOR_ID_ACC);
 Sensor temperature(SENSOR_ID_TEMP);
