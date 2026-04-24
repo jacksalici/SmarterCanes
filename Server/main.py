@@ -194,6 +194,23 @@ def index():
         "version": "1.0",
         "status": "running"
     }), 200
+    
+#show data
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    with sensor_data.lock:
+        accel = list(sensor_data.accel_buffer)
+        gyro  = list(sensor_data.gyro_buffer)
+        temp  = sensor_data.temperature
+        bat   = sensor_data.battery
+
+    return jsonify({
+        "accel": accel,
+        "gyro": gyro,
+        "temp": temp,
+        "bat": bat,
+    }), 200
+    
 
 def main():
     logger.info("=" * 60)
