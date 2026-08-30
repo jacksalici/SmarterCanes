@@ -5,9 +5,9 @@ A firmware for recording 6-axis IMU data (accel + gyro) to SD card with button-b
 ## Hardware
 
 - **Lolin32 Lite** (ESP32): Main controller
-- **ISM330DLC IMU** (I2C, SDA=GPIO25, SCL=GPIO26): 3-axis accelerometer + 3-axis gyroscope
+- **ISM330DLC IMU** (I2C, SDA=GPIO26, SCL=GPIO25): 3-axis accelerometer + 3-axis gyroscope
 - **microSD card module** (SPI, CS=GPIO5, SCK=GPIO18, MOSI=GPIO23, MISO=GPIO19): Data storage
-- **Push button** (GPIO4, active-low with internal pull-up): Gesture control
+- **Push button** (GPIO12, active-low with internal pull-up): Gesture control
 
 ## Architecture
 

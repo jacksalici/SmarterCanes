@@ -8,10 +8,10 @@
 
 namespace pins {
 constexpr uint8_t kSdCs = 5;
-constexpr uint8_t kImuSda = 25;
-constexpr uint8_t kImuScl = 26;
-constexpr uint8_t kButton = 4;
-}  // namespace pins
+constexpr uint8_t kImuSda = 26;
+constexpr uint8_t kImuScl = 25;
+constexpr uint8_t kButton = 12;
+}
 
 ISM330DLCSensor imu(&Wire, ISM330DLC_ACC_GYRO_I2C_ADDRESS_LOW);
 Button button(pins::kButton);
