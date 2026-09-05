@@ -33,7 +33,7 @@ Five-layer design:
    - Periodic flush (1 sec) to prevent data loss
 
 4. **Dashboard** (`Dashboard.h/.cpp`): WiFi + NTP + web UI for offloading recordings
-   - Connects to WiFi at boot with hardcoded credentials (bounded ~10 s timeout); failure is non-fatal — the device keeps recording standalone, it just skips starting the dashboard
+   - Connects to WiFi at boot using credentials read from `/.env` on the SD card (bounded ~10 s timeout); missing file or failure to connect is non-fatal — the device keeps recording standalone, it just skips starting the dashboard
    - On connect, syncs time via NTP (`configTzTime`, Europe/Rome) so SD file timestamps are meaningful; NTP failure is also non-fatal
    - Serves a single-page dashboard (`WebServer`, no auth, no JS) listing every recorded file with a Download link, a "Download all" streamed `.zip`, and a two-step "Delete all" action
    - Every route refuses (503) while `recorder.isRecording()` is true, since a blocking HTTP request (e.g. a large download) would otherwise stall the 10 ms IMU sample loop
@@ -69,14 +69,16 @@ pio run -e lolin32lite
 
 ## Dashboard
 
-Before flashing, edit the hardcoded WiFi credentials at the top of `main.cpp`:
+WiFi credentials are read from a plain-text file at the SD card root, `/.env` — not hardcoded, so they can be changed without reflashing. Create it on the card before inserting:
 
-```cpp
-namespace wifi_config {
-constexpr const char *kSsid = "CHANGE_ME_SSID";
-constexpr const char *kPassword = "CHANGE_ME_PASSWORD";
-}
 ```
+WIFI_SSID=YourNetworkName
+WIFI_PASSWORD=YourPassword
+```
+
+(Blank lines and lines starting with `#` are ignored.) This file is excluded from the dashboard's file listing and from "Download all"/"Delete all" — it's never treated as a recording, and `/clear` never removes it.
+
+If `/.env` is missing or has no `WIFI_SSID`, boot skips WiFi entirely (logged, non-fatal) and the device just records standalone.
 
 On boot, the serial log shows the WiFi connect attempt and either the dashboard URL (`http://<ip>/`) on success, or a warning that it's continuing without the dashboard (recording still works normally either way).
 

@@ -18,11 +18,6 @@ constexpr uint8_t kButton = 12;
 constexpr uint8_t kLed = 32;
 }
 
-namespace wifi_config {
-constexpr const char *kSsid = "hermes";
-constexpr const char *kPassword = "12345678";
-}
-
 ISM330DLCSensor imu(&Wire, ISM330DLC_ACC_GYRO_I2C_ADDRESS_LOW);
 ModulinoDistance distance;
 Button button(pins::kButton);
@@ -60,7 +55,7 @@ void setup() {
   }
 
   Serial.println("[Main] Connecting to WiFi...");
-  if (dashboard.begin(wifi_config::kSsid, wifi_config::kPassword)) {
+  if (dashboard.begin()) {
     Serial.print("[Main] Dashboard ready at http://");
     Serial.println(WiFi.localIP());
   } else {

@@ -16,19 +16,29 @@
 // sample loop during a blocking request (e.g. a large file download) and to
 // avoid touching the SD file handle the recorder still owns.
 //
+// WiFi credentials are read from a plain-text file on the SD card
+// (kEnvPath, "WIFI_SSID=...\nWIFI_PASSWORD=...") rather than hardcoded, so
+// they can be changed without reflashing. That file (like the session
+// index) is excluded from the file listing and from "download all"/"delete
+// all" - it's never treated as a recording.
+//
 // WiFi/NTP/HTTP failure must never affect standalone recording: begin()
-// returns false (and leaves the HTTP server un-started) if WiFi doesn't
-// connect within the timeout; poll() becomes a cheap no-op in that case.
+// returns false (and leaves the HTTP server un-started) if the credentials
+// file is missing or WiFi doesn't connect within the timeout; poll()
+// becomes a cheap no-op in that case.
 class Dashboard {
 public:
   explicit Dashboard(ImuRecorder &recorder);
 
-  // Connects to WiFi (bounded wait, kWifiConnectTimeoutMs), attempts a
-  // best-effort NTP time sync (bounded wait, ~5s, non-fatal on failure so
-  // future SD file timestamps just fall back to FatFs's default), and
-  // starts the HTTP server. Returns true iff WiFi connected (dashboard is
-  // reachable); does not start the server at all if WiFi failed.
-  bool begin(const char *ssid, const char *password);
+  static constexpr const char *kEnvPath = "/.env";
+
+  // Reads WiFi credentials from kEnvPath, connects to WiFi (bounded wait,
+  // kWifiConnectTimeoutMs), attempts a best-effort NTP time sync (bounded
+  // wait, ~5s, non-fatal on failure so future SD file timestamps just fall
+  // back to FatFs's default), and starts the HTTP server. Returns true iff
+  // WiFi connected (dashboard is reachable); does not start the server at
+  // all if the credentials file is missing/invalid or WiFi failed.
+  bool begin();
 
   // Call every loop() iteration. No-op if WiFi never connected. Otherwise
   // calls WebServer::handleClient(), which is cheap when idle but blocks
@@ -61,6 +71,7 @@ private:
   // handler must not proceed. Every handler calls this first.
   bool rejectIfRecording();
 
+  static bool loadCredentials(String &ssid, String &password);
   static bool isSafeFilename(const String &name);
   static String formatTimestamp(time_t t);
 };

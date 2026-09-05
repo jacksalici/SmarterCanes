@@ -21,9 +21,16 @@ const char *wifiStatusToString(wl_status_t status) {
 
 Dashboard::Dashboard(ImuRecorder &recorder) : recorder_(recorder), server_(kHttpPort) {}
 
-bool Dashboard::begin(const char *ssid, const char *password) {
+bool Dashboard::begin() {
+  String ssid, password;
+  if (!loadCredentials(ssid, password)) {
+    Serial.print("[Dashboard] No WiFi credentials at ");
+    Serial.println(kEnvPath);
+    return false;
+  }
+
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  WiFi.begin(ssid.c_str(), password.c_str());
 
   const unsigned long deadline = millis() + kWifiConnectTimeoutMs;
   while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
@@ -81,22 +88,27 @@ bool Dashboard::rejectIfRecording() {
 }
 
 namespace {
-String indexFileName() {
-  String name(ImuRecorder::kIndexPath);
+// SD::File::name() returns a bare basename (no leading slash); our path
+// constants carry a leading slash, so strip it before comparing.
+String bareName(const char *path) {
+  String name(path);
   if (name.startsWith("/")) name.remove(0, 1);
   return name;
 }
 
-// Every non-directory file at the SD root except the session-index
-// bookkeeping file.
-std::vector<String> listSessionFiles(const String &indexName) {
+String indexFileName() { return bareName(ImuRecorder::kIndexPath); }
+String envFileName() { return bareName(Dashboard::kEnvPath); }
+
+// Every non-directory file at the SD root except the session-index and
+// WiFi-credentials bookkeeping files.
+std::vector<String> listSessionFiles(const String &indexName, const String &envName) {
   std::vector<String> names;
   File root = SD.open("/");
   if (root) {
     File entry = root.openNextFile();
     while (entry) {
       const String name(entry.name());
-      if (!entry.isDirectory() && name != indexName) {
+      if (!entry.isDirectory() && name != indexName && name != envName) {
         names.push_back(name);
       }
       entry.close();
@@ -152,6 +164,7 @@ void Dashboard::handleRoot() {
   if (rejectIfRecording()) return;
 
   const String indexName = indexFileName();
+  const String envName = envFileName();
 
   String html;
   html.reserve(1024);
@@ -164,7 +177,7 @@ void Dashboard::handleRoot() {
     File entry = root.openNextFile();
     while (entry) {
       const String name(entry.name());
-      if (!entry.isDirectory() && name != indexName) {
+      if (!entry.isDirectory() && name != indexName && name != envName) {
         html += "<tr><td>" + name + "</td><td>" + String(entry.size()) + "</td><td>" +
                 formatTimestamp(entry.getLastWrite()) + "</td><td><a href=\"/download?file=" +
                 name + "\">Download</a></td></tr>";
@@ -211,7 +224,7 @@ void Dashboard::handleDownload() {
 void Dashboard::handleDownloadAll() {
   if (rejectIfRecording()) return;
 
-  const std::vector<String> names = listSessionFiles(indexFileName());
+  const std::vector<String> names = listSessionFiles(indexFileName(), envFileName());
   if (names.empty()) {
     server_.send(404, "text/plain", "No recordings to download");
     return;
@@ -343,7 +356,7 @@ void Dashboard::handleClearConfirm() {
 void Dashboard::handleClearAll() {
   if (rejectIfRecording()) return;
 
-  const std::vector<String> names = listSessionFiles(indexFileName());
+  const std::vector<String> names = listSessionFiles(indexFileName(), envFileName());
 
   size_t deleted = 0;
   for (const String &name : names) {
@@ -383,4 +396,35 @@ String Dashboard::formatTimestamp(time_t t) {
   char buf[24];
   strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv);
   return String(buf);
+}
+
+bool Dashboard::loadCredentials(String &ssid, String &password) {
+  File f = SD.open(kEnvPath, FILE_READ);
+  if (!f) return false;
+
+  ssid = "";
+  password = "";
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0 || line.startsWith("#")) continue;
+
+    const int eq = line.indexOf('=');
+    if (eq < 0) continue;
+
+    String key = line.substring(0, eq);
+    String value = line.substring(eq + 1);
+    key.trim();
+    value.trim();
+
+    if (key == "WIFI_SSID") {
+      ssid = value;
+    } else if (key == "WIFI_PASSWORD") {
+      password = value;
+    }
+  }
+  f.close();
+
+  return ssid.length() > 0;
 }
