@@ -1,6 +1,7 @@
 #include "ImuRecorder.h"
 
-ImuRecorder::ImuRecorder(ISM330DLCSensor &imu) : imu_(imu) {}
+ImuRecorder::ImuRecorder(ISM330DLCSensor &imu, ModulinoDistance &distance)
+    : imu_(imu), distance_(distance) {}
 
 bool ImuRecorder::begin() {
   if (imu_.begin() != ISM330DLC_STATUS_OK) {
@@ -11,6 +12,23 @@ bool ImuRecorder::begin() {
   imu_.Enable_X();
   imu_.Enable_G();
   Serial.println("[Recorder] IMU initialized");
+
+  // The VL53L4CD needs a moment after power-up before I2C reads are
+  // reliable; retry once after a short settle delay if the first attempt
+  // fails instead of giving up on a boot-time glitch.
+  delay(50);
+  distanceReady_ = distance_.begin();
+  if (!distanceReady_) {
+    delay(100);
+    distanceReady_ = distance_.begin();
+  }
+
+  if (!distanceReady_) {
+    Serial.println("[Recorder] WARNING: Distance sensor initialization failed");
+  } else {
+    Serial.println("[Recorder] Distance sensor initialized");
+  }
+
   return true;
 }
 
@@ -49,9 +67,10 @@ void ImuRecorder::start() {
     return;
   }
 
-  file_.println("t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps");
+  file_.println("t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm");
 
   recording_ = true;
+  lastDistanceMm_ = NAN;
   recordStartMs_ = lastSampleMs_ = lastFlushMs_ = millis();
   Serial.print("[Recorder] Started session ");
   Serial.println(sessionIndex_);
@@ -85,6 +104,10 @@ void ImuRecorder::poll() {
   imu_.Get_X_Axes(acc);
   imu_.Get_G_Axes(gyro);
 
+  if (distanceReady_ && distance_.available()) {
+    lastDistanceMm_ = distance_.get();
+  }
+
   file_.print(now - recordStartMs_);
   file_.print(',');
   file_.print(acc[0]);
@@ -97,7 +120,13 @@ void ImuRecorder::poll() {
   file_.print(',');
   file_.print(gyro[1]);
   file_.print(',');
-  file_.println(gyro[2]);
+  file_.print(gyro[2]);
+  file_.print(',');
+  if (isnan(lastDistanceMm_)) {
+    file_.println(-1);
+  } else {
+    file_.println(lastDistanceMm_, 1);
+  }
 
   if (now - lastFlushMs_ >= kFlushIntervalMs) {
     file_.flush();

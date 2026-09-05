@@ -2,23 +2,31 @@
 
 Button::Button(uint8_t pin) : pin_(pin) {}
 
+void IRAM_ATTR Button::onChange(void *arg) {
+  Button *self = static_cast<Button *>(arg);
+  self->rawState_ = digitalRead(self->pin_) == LOW;
+  self->lastEdgeMs_ = millis();
+}
+
 void Button::begin() {
   pinMode(pin_, INPUT_PULLUP);
+  rawState_ = digitalRead(pin_) == LOW;
+  lastEdgeMs_ = millis();
+  attachInterruptArg(digitalPinToInterrupt(pin_), onChange, this, CHANGE);
 }
 
 ButtonEvent Button::update() {
-  const bool reading = digitalRead(pin_) == LOW;
   const unsigned long now = millis();
 
-  if (reading != rawState_) {
-    rawState_ = reading;
-    lastEdgeMs_ = now;
-  }
+  noInterrupts();
+  const bool reading = rawState_;
+  const unsigned long edgeMs = lastEdgeMs_;
+  interrupts();
 
   ButtonEvent event = ButtonEvent::None;
 
-  if (now - lastEdgeMs_ >= kDebounceMs && stableState_ != rawState_) {
-    stableState_ = rawState_;
+  if (now - edgeMs >= kDebounceMs && stableState_ != reading) {
+    stableState_ = reading;
 
     if (stableState_) {
       pressStartMs_ = now;

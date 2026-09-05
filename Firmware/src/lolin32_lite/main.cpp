@@ -2,20 +2,25 @@
 #include <SD.h>
 #include <Wire.h>
 #include <ISM330DLCSensor.h>
+#include <Modulino.h>
 
 #include "Button.h"
 #include "ImuRecorder.h"
+#include "StatusLed.h"
 
 namespace pins {
 constexpr uint8_t kSdCs = 5;
 constexpr uint8_t kImuSda = 26;
 constexpr uint8_t kImuScl = 25;
 constexpr uint8_t kButton = 12;
+constexpr uint8_t kLed = 22;
 }
 
 ISM330DLCSensor imu(&Wire, ISM330DLC_ACC_GYRO_I2C_ADDRESS_LOW);
+ModulinoDistance distance;
 Button button(pins::kButton);
-ImuRecorder recorder(imu);
+StatusLed statusLed(pins::kLed);
+ImuRecorder recorder(imu, distance);
 
 void setup() {
   Serial.begin(115200);
@@ -24,9 +29,13 @@ void setup() {
 
   Serial.println("[Main] Initializing I2C...");
   Wire.begin(pins::kImuSda, pins::kImuScl);
+  Modulino.begin(Wire);
 
   Serial.println("[Main] Initializing button...");
   button.begin();
+
+  Serial.println("[Main] Initializing status LED...");
+  statusLed.begin();
 
   Serial.println("[Main] Initializing SD card...");
   if (!SD.begin(pins::kSdCs)) {
@@ -76,4 +85,7 @@ void loop() {
   }
 
   recorder.poll();
+
+  statusLed.setActive(recorder.isRecording());
+  statusLed.update();
 }
