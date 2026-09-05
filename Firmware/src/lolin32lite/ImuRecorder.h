@@ -20,10 +20,11 @@ public:
 
   bool isRecording() const { return recording_; }
 
+  static constexpr const char *kIndexPath = "/rec_index.txt";
+
 private:
   static constexpr unsigned long kSampleIntervalMs = 10;
   static constexpr unsigned long kFlushIntervalMs = 1000;
-  static constexpr const char *kIndexPath = "/rec_index.txt";
 
   ISM330DLCSensor &imu_;
   ModulinoDistance &distance_;

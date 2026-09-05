@@ -1,6 +1,6 @@
 # Lolin32 Lite IMU Recorder
 
-A firmware for recording 6-axis IMU data (accel + gyro) plus distance-to-ground/obstacle to SD card, with button-based session control and an LED that blinks while recording.
+A firmware for recording 6-axis IMU data (accel + gyro) plus distance-to-ground/obstacle to SD card, with button-based session control, an LED that blinks while recording, and a WiFi dashboard to download and clear recordings.
 
 ## Hardware
 
@@ -14,7 +14,7 @@ A firmware for recording 6-axis IMU data (accel + gyro) plus distance-to-ground/
 
 ## Architecture
 
-Four-layer design:
+Five-layer design:
 
 1. **Button** (`Button.h/.cpp`): Non-blocking gesture detection
    - Debounce (30 ms), click/double-click/long-press (800 ms threshold)
@@ -32,7 +32,13 @@ Four-layer design:
    - Renames files on stop with annotation suffix (`_ann-1.csv`, `_ann0.csv`, `_ann1.csv`)
    - Periodic flush (1 sec) to prevent data loss
 
-4. **Main** (`main.cpp`): Event loop
+4. **Dashboard** (`Dashboard.h/.cpp`): WiFi + NTP + web UI for offloading recordings
+   - Connects to WiFi at boot with hardcoded credentials (bounded ~10 s timeout); failure is non-fatal — the device keeps recording standalone, it just skips starting the dashboard
+   - On connect, syncs time via NTP (`configTzTime`, Europe/Rome) so SD file timestamps are meaningful; NTP failure is also non-fatal
+   - Serves a single-page dashboard (`WebServer`, no auth, no JS) listing every recorded file with a Download link, a "Download all" streamed `.zip`, and a two-step "Delete all" action
+   - Every route refuses (503) while `recorder.isRecording()` is true, since a blocking HTTP request (e.g. a large download) would otherwise stall the 10 ms IMU sample loop
+
+5. **Main** (`main.cpp`): Event loop
    - Single click: toggle recording
    - Double-click: stop with annotation 0
    - Long-press: stop with annotation 1
@@ -52,7 +58,7 @@ pio run -e lolin32lite -t upload
 
 **Monitor serial output (115200 baud):**
 ```bash
-pio device monitor -e lolin32_lite
+pio device monitor -e lolin32lite
 ```
 
 **Clean build:**
@@ -61,12 +67,33 @@ pio run -e lolin32lite --target clean
 pio run -e lolin32lite
 ```
 
+## Dashboard
+
+Before flashing, edit the hardcoded WiFi credentials at the top of `main.cpp`:
+
+```cpp
+namespace wifi_config {
+constexpr const char *kSsid = "CHANGE_ME_SSID";
+constexpr const char *kPassword = "CHANGE_ME_PASSWORD";
+}
+```
+
+On boot, the serial log shows the WiFi connect attempt and either the dashboard URL (`http://<ip>/`) on success, or a warning that it's continuing without the dashboard (recording still works normally either way).
+
+Once connected, open that URL in a browser on the same network:
+- `/` — lists every recorded session (name, size, timestamp) with a **Download** link each
+- **Download all (.zip)** — streams every recorded session as a single uncompressed `.zip` (built on the fly, not buffered in RAM or written to the SD card)
+- **Delete all recordings** — a confirmation page, then one button that wipes every session file and resets the session counter back to 0
+
+The dashboard is unavailable (503) while a recording is in progress — stop the recording via the button first.
+
 ## Serial Output
 
 Firmware logs all events with prefixes:
 - `[Main]` — initialization, status
 - `[Button]` — gesture detection
 - `[Recorder]` — IMU/SD operations
+- `[Dashboard]` — WiFi/NTP status
 
 ## CSV Format
 

@@ -1,12 +1,14 @@
 #include <Arduino.h>
 #include <SD.h>
 #include <Wire.h>
+#include <WiFi.h>
 #include <ISM330DLCSensor.h>
 #include <Modulino.h>
 
 #include "Button.h"
 #include "ImuRecorder.h"
 #include "StatusLed.h"
+#include "Dashboard.h"
 
 namespace pins {
 constexpr uint8_t kSdCs = 5;
@@ -16,11 +18,17 @@ constexpr uint8_t kButton = 12;
 constexpr uint8_t kLed = 32;
 }
 
+namespace wifi_config {
+constexpr const char *kSsid = "hermes";
+constexpr const char *kPassword = "12345678";
+}
+
 ISM330DLCSensor imu(&Wire, ISM330DLC_ACC_GYRO_I2C_ADDRESS_LOW);
 ModulinoDistance distance;
 Button button(pins::kButton);
 StatusLed statusLed(pins::kLed);
 ImuRecorder recorder(imu, distance);
+Dashboard dashboard(recorder);
 
 void setup() {
   Serial.begin(115200);
@@ -49,6 +57,14 @@ void setup() {
   if (!recorder.begin()) {
     Serial.println("[Main] ERROR: IMU initialization failed");
     while (true) delay(1000);
+  }
+
+  Serial.println("[Main] Connecting to WiFi...");
+  if (dashboard.begin(wifi_config::kSsid, wifi_config::kPassword)) {
+    Serial.print("[Main] Dashboard ready at http://");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("[Main] WiFi unavailable - continuing without dashboard");
   }
 
   Serial.println("[Main] ========================================");
@@ -86,6 +102,7 @@ void loop() {
   }
 
   recorder.poll();
+  dashboard.poll();
 
   statusLed.setActive(recorder.isRecording());
   statusLed.update();
