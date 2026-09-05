@@ -20,11 +20,14 @@ from utils.io import ImuRecording
 _BAND_LOW_HZ = 0.5
 _BAND_HIGH_HZ = 3.5
 _MIN_STEP_INTERVAL_S = 0.25  # cap cadence at 240 steps/min
-_MAD_TO_STD = 1.4826  # scales MAD to a std-equivalent for a normal noise floor
-_HEIGHT_MAD_MULTIPLIER = 5.0
-# Floor for the detection threshold, in g. A near-motionless recording has a
-# near-zero MAD, which would otherwise let filtfilt's edge transients (or
-# residual sensor noise) get picked up as "steps".
+# Fraction of the median candidate-peak height used as the detection
+# threshold. Based on the peaks themselves (not the whole signal), so it
+# works both for long recordings with a mostly-idle tail and for short
+# recordings that are almost entirely gait activity.
+_HEIGHT_MEDIAN_FRACTION = 0.4
+# Absolute floor, in g. A near-motionless recording has near-zero peaks,
+# which would otherwise let filtfilt's edge transients (or residual sensor
+# noise) get picked up as "steps".
 _MIN_HEIGHT_G = 0.02
 
 
@@ -49,14 +52,14 @@ def count_steps(rec: ImuRecording) -> StepCountResult:
     filtered = _bandpass(mag, rec.fs, _BAND_LOW_HZ, _BAND_HIGH_HZ)
 
     min_distance = max(1, int(_MIN_STEP_INTERVAL_S * rec.fs))
-    # A global std threshold shrinks as an idle tail dilutes the recording,
-    # which would let noise start false-triggering in long logs. MAD instead
-    # tracks the quiet-period noise floor (robust as long as walking is a
-    # minority of the recording), so the threshold stays meaningful either way.
-    mad = np.median(np.abs(filtered - np.median(filtered)))
-    height = max(_HEIGHT_MAD_MULTIPLIER * _MAD_TO_STD * mad, _MIN_HEIGHT_G)
 
-    peaks, _ = find_peaks(filtered, height=height, distance=min_distance)
+    candidates, _ = find_peaks(filtered, distance=min_distance)
+    if candidates.size:
+        height = max(_HEIGHT_MEDIAN_FRACTION * np.median(filtered[candidates]), _MIN_HEIGHT_G)
+        peaks = candidates[filtered[candidates] >= height]
+    else:
+        peaks = candidates
+
     step_times = rec.t[peaks]
     step_intervals = np.diff(step_times)
 
