@@ -9,8 +9,8 @@ A firmware for recording 6-axis IMU data (accel + gyro) plus distance-to-ground/
 - **Modulino Distance** (VL53L4CD, I2C — shared bus with the IMU, SDA=GPIO26, SCL=GPIO25, address `0x29`): time-of-flight distance sensor
 - **microSD card module** (SPI, CS=GPIO5, SCK=GPIO18, MOSI=GPIO23, MISO=GPIO19): Data storage
 - **Push button** (GPIO12, active-low with internal pull-up): Gesture control
-- **Status LED** (GPIO22, through a series resistor to GND): blinks while recording, off otherwise
-  - Note: the Lolin32 Lite's onboard blue LED is also hardwired to GPIO22 (active-low), so this shares the pin with the onboard LED — driving it for the external LED also toggles the onboard one with opposite polarity. Move to a free pin (e.g. GPIO27) to avoid that if it's an issue.
+- **Status LED** (GPIO32, through a series resistor to GND): 3 fast blinks on boot, then blinks while recording, off otherwise
+  - Note: the Lolin32 Lite's onboard blue LED is hardwired to GPIO22 (active-low) — GPIO32 avoids sharing that pin.
 
 ## Architecture
 
@@ -21,6 +21,7 @@ Four-layer design:
    - Emits one event per `update()` call
 
 2. **StatusLed** (`StatusLed.h/.cpp`): Non-blocking LED blinker
+   - 3 fast blocking blinks (100 ms on/off) at boot as a startup indicator
    - Off while idle; blinks at a fixed 300 ms interval while active
    - Driven by `recorder.isRecording()` every loop iteration
 
@@ -41,12 +42,12 @@ Four-layer design:
 **Build:**
 ```bash
 cd Firmware
-pio run -e lolin32_lite
+pio run -e lolin32lite
 ```
 
 **Upload:**
 ```bash
-pio run -e lolin32_lite -t upload
+pio run -e lolin32lite -t upload
 ```
 
 **Monitor serial output (115200 baud):**
@@ -56,8 +57,8 @@ pio device monitor -e lolin32_lite
 
 **Clean build:**
 ```bash
-pio run -e lolin32_lite --target clean
-pio run -e lolin32_lite
+pio run -e lolin32lite --target clean
+pio run -e lolin32lite
 ```
 
 ## Serial Output

@@ -10,6 +10,7 @@ public:
   explicit StatusLed(uint8_t pin);
 
   void begin();
+  void blinkBlocking(uint8_t times, unsigned long intervalMs);
   void setActive(bool active);
   void update();
 

@@ -13,7 +13,7 @@ constexpr uint8_t kSdCs = 5;
 constexpr uint8_t kImuSda = 26;
 constexpr uint8_t kImuScl = 25;
 constexpr uint8_t kButton = 12;
-constexpr uint8_t kLed = 22;
+constexpr uint8_t kLed = 32;
 }
 
 ISM330DLCSensor imu(&Wire, ISM330DLC_ACC_GYRO_I2C_ADDRESS_LOW);
@@ -36,6 +36,7 @@ void setup() {
 
   Serial.println("[Main] Initializing status LED...");
   statusLed.begin();
+  statusLed.blinkBlocking(3, 100);
 
   Serial.println("[Main] Initializing SD card...");
   if (!SD.begin(pins::kSdCs)) {

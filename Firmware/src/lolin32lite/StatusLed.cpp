@@ -7,6 +7,15 @@ void StatusLed::begin() {
   digitalWrite(pin_, LOW);
 }
 
+void StatusLed::blinkBlocking(uint8_t times, unsigned long intervalMs) {
+  for (uint8_t i = 0; i < times; i++) {
+    digitalWrite(pin_, HIGH);
+    delay(intervalMs);
+    digitalWrite(pin_, LOW);
+    delay(intervalMs);
+  }
+}
+
 void StatusLed::setActive(bool active) {
   if (active == active_) return;
   active_ = active;
