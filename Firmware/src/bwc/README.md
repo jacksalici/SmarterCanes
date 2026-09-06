@@ -49,26 +49,28 @@ Five-layer design:
 
 ## Build & Deploy
 
+`bwc` is the default PlatformIO environment (see `platformio.ini`), so `-e bwc` can be omitted below.
+
 **Build:**
 ```bash
 cd Firmware
-pio run -e lolin32lite
+pio run -e bwc
 ```
 
 **Upload:**
 ```bash
-pio run -e lolin32lite -t upload
+pio run -e bwc -t upload
 ```
 
 **Monitor serial output (115200 baud):**
 ```bash
-pio device monitor -e lolin32lite
+pio device monitor -e bwc -b 115200
 ```
 
 **Clean build:**
 ```bash
-pio run -e lolin32lite --target clean
-pio run -e lolin32lite
+pio run -e bwc --target clean
+pio run -e bwc
 ```
 
 ## Dashboard
@@ -118,3 +120,14 @@ t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm
 - `ax/ay/az`: Acceleration in millig
 - `gx/gy/gz`: Rotation in millidegrees/sec
 - `dist_mm`: Distance in millimeters from the Modulino Distance sensor; `-1` if no reading is available yet
+
+## Related: `distance_test`
+
+A separate, standalone project under `Firmware/src/distance_test/` — just the
+Modulino Distance sensor, printing one reading per line for the Serial
+Plotter, independent of the rest of this firmware. Useful for checking
+sensor wiring/mounting without recording a full session:
+
+```bash
+pio run -e distance_test -t upload
+```
