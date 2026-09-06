@@ -70,7 +70,7 @@ bool ImuRecorder::openSegment() {
     return false;
   }
 
-  file_.println("t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm");
+  file_.println("t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm,event");
   fileOpen_ = true;
   segmentStartMs_ = millis();
   return true;
@@ -122,6 +122,7 @@ void ImuRecorder::start() {
   segmentIndex_ = 0;
   bufferLen_ = 0;
   lastDistanceMm_ = NAN;
+  pendingEvent_ = false;
   recordStartMs_ = lastSampleMs_ = lastBufferFlushMs_ = lastFlushMs_ = millis();
   recording_ = true;
 
@@ -157,6 +158,11 @@ void ImuRecorder::stop(int8_t annotation) {
   Serial.println(annotation);
 }
 
+void ImuRecorder::annotateEvent() {
+  if (!recording_) return;
+  pendingEvent_ = true;
+}
+
 void ImuRecorder::poll() {
   if (!recording_) return;
 
@@ -182,18 +188,21 @@ void ImuRecorder::poll() {
     lastDistanceMm_ = distance_.get();
   }
 
+  const int event = pendingEvent_ ? 1 : 0;
+  pendingEvent_ = false;
+
   char row[kMaxRowLen];
   int len;
   if (isnan(lastDistanceMm_)) {
-    len = snprintf(row, sizeof(row), "%lu,%ld,%ld,%ld,%ld,%ld,%ld,-1\n", now - recordStartMs_,
+    len = snprintf(row, sizeof(row), "%lu,%ld,%ld,%ld,%ld,%ld,%ld,-1,%d\n", now - recordStartMs_,
                    static_cast<long>(acc[0]), static_cast<long>(acc[1]), static_cast<long>(acc[2]),
                    static_cast<long>(gyro[0]), static_cast<long>(gyro[1]),
-                   static_cast<long>(gyro[2]));
+                   static_cast<long>(gyro[2]), event);
   } else {
-    len = snprintf(row, sizeof(row), "%lu,%ld,%ld,%ld,%ld,%ld,%ld,%.1f\n", now - recordStartMs_,
+    len = snprintf(row, sizeof(row), "%lu,%ld,%ld,%ld,%ld,%ld,%ld,%.1f,%d\n", now - recordStartMs_,
                    static_cast<long>(acc[0]), static_cast<long>(acc[1]), static_cast<long>(acc[2]),
                    static_cast<long>(gyro[0]), static_cast<long>(gyro[1]),
-                   static_cast<long>(gyro[2]), lastDistanceMm_);
+                   static_cast<long>(gyro[2]), lastDistanceMm_, event);
   }
   if (len > 0) appendToBuffer(row, static_cast<size_t>(len));
 

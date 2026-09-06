@@ -29,6 +29,10 @@ public:
   bool begin();
   void start();
   void stop(int8_t annotation);
+  // Marks the next sampled row with event=1 instead of interrupting the
+  // recording, so a button press during a walk can flag a moment of
+  // interest (e.g. a stumble) without stopping data collection.
+  void annotateEvent();
   void poll();
 
   bool isRecording() const { return recording_; }
@@ -62,6 +66,7 @@ private:
   uint32_t sessionIndex_ = 0;
   uint32_t segmentIndex_ = 0;
   float lastDistanceMm_ = NAN;
+  bool pendingEvent_ = false;
 
   char buffer_[kBufferCapacity];
   size_t bufferLen_ = 0;

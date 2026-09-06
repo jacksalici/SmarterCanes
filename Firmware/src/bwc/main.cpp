@@ -82,9 +82,9 @@ void setup() {
 
   Serial.println("[Main] ========================================");
   Serial.println("[Main] Ready - waiting for button input");
-  Serial.println("[Main] Click: toggle recording");
-  Serial.println("[Main] Double-click: stop with annotation 0");
-  Serial.println("[Main] Long-press: stop with annotation 1");
+  Serial.println("[Main] Click: start recording, or mark an event while recording (quick double blink)");
+  Serial.println("[Main] Double-click: stop with annotation 0 (triple blink)");
+  Serial.println("[Main] Long-press: stop with annotation 1 (triple blink)");
   Serial.println("[Main] ========================================");
 }
 
@@ -92,7 +92,8 @@ void loop() {
   switch (button.update()) {
     case ButtonEvent::Click:
       if (recorder.isRecording()) {
-        recorder.stop(-1);
+        recorder.annotateEvent();
+        statusLed.signal(StatusLed::Signal::EventBlink);
       } else {
         recorder.start();
       }
@@ -101,12 +102,14 @@ void loop() {
     case ButtonEvent::DoubleClick:
       if (recorder.isRecording()) {
         recorder.stop(0);
+        statusLed.signal(StatusLed::Signal::StopBlink);
       }
       break;
 
     case ButtonEvent::LongPress:
       if (recorder.isRecording()) {
         recorder.stop(1);
+        statusLed.signal(StatusLed::Signal::StopBlink);
       }
       break;
 
