@@ -1,5 +1,7 @@
 #include "ImuRecorder.h"
 
+#include <string.h>
+
 ImuRecorder::ImuRecorder(ISM330DLCSensor &imu, ModulinoDistance &distance)
     : imu_(imu), distance_(distance) {}
 
@@ -51,44 +53,107 @@ uint32_t ImuRecorder::nextSessionIndex() {
   return index;
 }
 
-String ImuRecorder::sessionPath(uint32_t index) {
-  char buf[24];
-  snprintf(buf, sizeof(buf), "/rec_%05lu.csv", static_cast<unsigned long>(index));
+String ImuRecorder::segmentPath(uint32_t sessionIndex, uint32_t segmentIndex) {
+  char buf[32];
+  snprintf(buf, sizeof(buf), "/rec_%05lu_seg%03lu.csv", static_cast<unsigned long>(sessionIndex),
+           static_cast<unsigned long>(segmentIndex));
   return String(buf);
+}
+
+bool ImuRecorder::openSegment() {
+  lastOpenAttemptMs_ = millis();
+  file_ = SD.open(segmentPath(sessionIndex_, segmentIndex_), FILE_WRITE);
+  if (!file_) {
+    Serial.print("[Recorder] Failed to open segment ");
+    Serial.println(segmentIndex_);
+    fileOpen_ = false;
+    return false;
+  }
+
+  file_.println("t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm");
+  fileOpen_ = true;
+  segmentStartMs_ = millis();
+  return true;
+}
+
+void ImuRecorder::closeSegment() {
+  if (!fileOpen_) return;
+  flushBuffer();  // best-effort; we're closing regardless of the result
+  file_.flush();
+  file_.close();
+  fileOpen_ = false;
+}
+
+bool ImuRecorder::flushBuffer() {
+  if (bufferLen_ == 0) return true;
+
+  bool ok = fileOpen_;
+  if (ok) {
+    file_.write(reinterpret_cast<const uint8_t *>(buffer_), bufferLen_);
+    if (file_.getWriteError()) {
+      file_.clearWriteError();
+      ok = false;
+    }
+  }
+
+  bufferLen_ = 0;
+  return ok;
+}
+
+void ImuRecorder::appendToBuffer(const char *data, size_t len) {
+  if (bufferLen_ + len > kBufferCapacity && !flushBuffer()) {
+    Serial.println("[Recorder] WARNING: SD write error, rotating to a new segment");
+    rotate();
+  }
+  memcpy(buffer_ + bufferLen_, data, len);
+  bufferLen_ += len;
+}
+
+void ImuRecorder::rotate() {
+  closeSegment();
+  segmentIndex_++;
+  openSegment();
 }
 
 void ImuRecorder::start() {
   if (recording_) return;
 
   sessionIndex_ = nextSessionIndex();
-  file_ = SD.open(sessionPath(sessionIndex_), FILE_WRITE);
-  if (!file_) {
-    Serial.println("[Recorder] Failed to open file");
-    return;
-  }
-
-  file_.println("t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm");
-
-  recording_ = true;
+  segmentIndex_ = 0;
+  bufferLen_ = 0;
   lastDistanceMm_ = NAN;
-  recordStartMs_ = lastSampleMs_ = lastFlushMs_ = millis();
-  Serial.print("[Recorder] Started session ");
-  Serial.println(sessionIndex_);
+  recordStartMs_ = lastSampleMs_ = lastBufferFlushMs_ = lastFlushMs_ = millis();
+  recording_ = true;
+
+  if (!openSegment()) {
+    Serial.println("[Recorder] SD unavailable at start; will keep retrying");
+  } else {
+    Serial.print("[Recorder] Started session ");
+    Serial.println(sessionIndex_);
+  }
 }
 
 void ImuRecorder::stop(int8_t annotation) {
   if (!recording_) return;
 
-  file_.close();
+  // Every index below this was, at some point, successfully opened and
+  // closed - the current one only counts if it's still open (closeSegment()
+  // is about to close it too).
+  const uint32_t segmentCount = fileOpen_ ? segmentIndex_ + 1 : segmentIndex_;
+  closeSegment();
   recording_ = false;
 
-  const String from = sessionPath(sessionIndex_);
-  const String to = from.substring(0, from.length() - 4) + "_ann" + String(annotation) + ".csv";
-  SD.rename(from, to);
+  for (uint32_t i = 0; i < segmentCount; i++) {
+    const String from = segmentPath(sessionIndex_, i);
+    const String to = from.substring(0, from.length() - 4) + "_ann" + String(annotation) + ".csv";
+    SD.rename(from, to);
+  }
 
   Serial.print("[Recorder] Stopped session ");
   Serial.print(sessionIndex_);
-  Serial.print(" with annotation ");
+  Serial.print(" (");
+  Serial.print(segmentCount);
+  Serial.print(" segment(s)) with annotation ");
   Serial.println(annotation);
 }
 
@@ -96,6 +161,15 @@ void ImuRecorder::poll() {
   if (!recording_) return;
 
   const unsigned long now = millis();
+
+  if (!fileOpen_) {
+    if (now - lastOpenAttemptMs_ < kReopenBackoffMs) return;
+    if (!openSegment()) return;
+  } else if (now - segmentStartMs_ >= kSegmentDurationMs) {
+    rotate();
+    if (!fileOpen_) return;  // reopen failed; the backoff branch above will retry
+  }
+
   if (now - lastSampleMs_ < kSampleIntervalMs) return;
   lastSampleMs_ = now;
 
@@ -108,27 +182,30 @@ void ImuRecorder::poll() {
     lastDistanceMm_ = distance_.get();
   }
 
-  file_.print(now - recordStartMs_);
-  file_.print(',');
-  file_.print(acc[0]);
-  file_.print(',');
-  file_.print(acc[1]);
-  file_.print(',');
-  file_.print(acc[2]);
-  file_.print(',');
-  file_.print(gyro[0]);
-  file_.print(',');
-  file_.print(gyro[1]);
-  file_.print(',');
-  file_.print(gyro[2]);
-  file_.print(',');
+  char row[kMaxRowLen];
+  int len;
   if (isnan(lastDistanceMm_)) {
-    file_.println(-1);
+    len = snprintf(row, sizeof(row), "%lu,%ld,%ld,%ld,%ld,%ld,%ld,-1\n", now - recordStartMs_,
+                   static_cast<long>(acc[0]), static_cast<long>(acc[1]), static_cast<long>(acc[2]),
+                   static_cast<long>(gyro[0]), static_cast<long>(gyro[1]),
+                   static_cast<long>(gyro[2]));
   } else {
-    file_.println(lastDistanceMm_, 1);
+    len = snprintf(row, sizeof(row), "%lu,%ld,%ld,%ld,%ld,%ld,%ld,%.1f\n", now - recordStartMs_,
+                   static_cast<long>(acc[0]), static_cast<long>(acc[1]), static_cast<long>(acc[2]),
+                   static_cast<long>(gyro[0]), static_cast<long>(gyro[1]),
+                   static_cast<long>(gyro[2]), lastDistanceMm_);
+  }
+  if (len > 0) appendToBuffer(row, static_cast<size_t>(len));
+
+  if (now - lastBufferFlushMs_ >= kBufferFlushIntervalMs) {
+    lastBufferFlushMs_ = now;
+    if (!flushBuffer()) {
+      Serial.println("[Recorder] WARNING: SD write error, rotating to a new segment");
+      rotate();
+    }
   }
 
-  if (now - lastFlushMs_ >= kFlushIntervalMs) {
+  if (fileOpen_ && now - lastFlushMs_ >= kFlushIntervalMs) {
     file_.flush();
     lastFlushMs_ = now;
   }

@@ -23,14 +23,17 @@ Five-layer design:
 2. **StatusLed** (`StatusLed.h/.cpp`): Non-blocking LED blinker
    - 3 fast blocking blinks (100 ms on/off) at boot as a startup indicator
    - Off while idle; blinks at a fixed 300 ms interval while active
-   - Driven by `recorder.isRecording()` every loop iteration
+   - Solid on (no blinking) whenever `recorder.hasFault()` is true - an SD write/open failure - regardless of the active/idle state, so a fault is visually distinct from normal recording
+   - Driven by `recorder.isRecording()` / `recorder.hasFault()` every loop iteration
 
 3. **ImuRecorder** (`ImuRecorder.h/.cpp`): IMU + distance sampling + file management
-   - Fixed 10 ms sample interval → CSV rows
+   - Fixed 10 ms sample interval; samples are batched in a 2 KB RAM buffer and written to SD in bulk (at most every 250 ms or when the buffer fills), rather than one SD write per sample
+   - A session is split into 30-second segment files instead of one continuous file, so an SD fault only costs the segment in progress - every prior segment was already flushed and closed
+   - A failed write or file-open marks the segment dead and retries into a fresh one on a 500 ms backoff, so a transient fault (e.g. a jostled card connection) self-heals instead of silently halting data collection for the rest of the session
    - Distance is read opportunistically (VL53L4CD updates slower than the sample rate); the last known reading is reused between updates, and `-1` is written if no reading has been received yet or the sensor is unavailable
    - Auto-numbered sessions via index file (`/rec_index.txt`)
-   - Renames files on stop with annotation suffix (`_ann-1.csv`, `_ann0.csv`, `_ann1.csv`)
-   - Periodic flush (1 sec) to prevent data loss
+   - On stop, every segment belonging to the session is renamed with the annotation suffix (`_ann-1.csv`, `_ann0.csv`, `_ann1.csv`)
+   - Periodic flush (1 sec) of whatever's already reached the file, on top of the buffer's own flush, to bound data loss on power failure
 
 4. **Dashboard** (`Dashboard.h/.cpp`): WiFi + NTP + web UI for offloading recordings
    - Connects to WiFi at boot using credentials read from `/.env` on the SD card (bounded ~10 s timeout); missing file or failure to connect is non-fatal — the device keeps recording standalone, it just skips starting the dashboard
@@ -99,7 +102,7 @@ Firmware logs all events with prefixes:
 
 ## CSV Format
 
-Sessions are stored as `rec_XXXXX_annY.csv` where Y ∈ {-1, 0, 1}:
+Each session is stored as one or more 30-second segment files, `rec_XXXXX_segNNN_annY.csv`, where `XXXXX` is the session index, `NNN` the zero-based segment number, and `Y ∈ {-1, 0, 1}` the stop annotation (shared by every segment of the session):
 
 ```
 t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm
@@ -107,6 +110,8 @@ t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm
 10,102,48,982,12,18,6,842.5
 ...
 ```
+
+`t_ms` restarts from 0 in each segment (milliseconds since that segment, not the session, started); consecutive segments of the same session are meant to be read back-to-back as one continuous recording.
 
 - `t_ms`: Milliseconds since recording start
 - `ax/ay/az`: Acceleration in millig

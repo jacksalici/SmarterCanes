@@ -20,6 +20,26 @@ void StatusLed::setActive(bool active) {
   if (active == active_) return;
   active_ = active;
 
+  if (fault_) return;  // solid fault indicator takes priority over the blink
+  applyActiveVisual();
+}
+
+void StatusLed::setFault(bool fault) {
+  if (fault == fault_) return;
+  fault_ = fault;
+
+  if (fault_) {
+    ledOn_ = true;
+    digitalWrite(pin_, HIGH);
+  } else {
+    // active_ itself didn't change while masked by the fault, so
+    // setActive()'s no-op-on-same-value guard would skip restoring the
+    // visual - apply it directly instead.
+    applyActiveVisual();
+  }
+}
+
+void StatusLed::applyActiveVisual() {
   if (!active_) {
     ledOn_ = false;
     digitalWrite(pin_, LOW);
@@ -31,7 +51,7 @@ void StatusLed::setActive(bool active) {
 }
 
 void StatusLed::update() {
-  if (!active_) return;
+  if (fault_ || !active_) return;  // solid (fault) or off (idle): nothing to toggle
 
   const unsigned long now = millis();
   if (now - lastToggleMs_ < kBlinkIntervalMs) return;

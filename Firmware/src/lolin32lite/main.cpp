@@ -25,6 +25,29 @@ StatusLed statusLed(pins::kLed);
 ImuRecorder recorder(imu, distance);
 Dashboard dashboard(recorder);
 
+namespace {
+bool trySdBegin() { return SD.begin(pins::kSdCs); }
+bool tryRecorderBegin() { return recorder.begin(); }
+
+// Retries a boot-critical init step forever instead of hanging silently, so
+// a bad connection (SD card, IMU) that clears up - e.g. the card gets
+// reseated - recovers without a power cycle. The LED goes solid while
+// stuck, the same "fault" signal poll() uses for a mid-recording SD issue,
+// so a boot failure is visible even with no serial monitor attached.
+void waitFor(const char *label, bool (*attempt)()) {
+  while (!attempt()) {
+    Serial.print("[Main] ERROR: ");
+    Serial.print(label);
+    Serial.println(" failed, retrying...");
+    statusLed.setFault(true);
+    statusLed.update();
+    delay(1000);
+  }
+  statusLed.setFault(false);
+  statusLed.update();
+}
+}  // namespace
+
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -42,17 +65,12 @@ void setup() {
   statusLed.blinkBlocking(3, 100);
 
   Serial.println("[Main] Initializing SD card...");
-  if (!SD.begin(pins::kSdCs)) {
-    Serial.println("[Main] ERROR: SD card initialization failed");
-    while (true) delay(1000);
-  }
+  waitFor("SD card initialization", trySdBegin);
   Serial.println("[Main] SD card ready");
 
   Serial.println("[Main] Initializing IMU...");
-  if (!recorder.begin()) {
-    Serial.println("[Main] ERROR: IMU initialization failed");
-    while (true) delay(1000);
-  }
+  waitFor("IMU initialization", tryRecorderBegin);
+  Serial.println("[Main] IMU ready");
 
   Serial.println("[Main] Connecting to WiFi...");
   if (dashboard.begin()) {
@@ -100,5 +118,6 @@ void loop() {
   dashboard.poll();
 
   statusLed.setActive(recorder.isRecording());
+  statusLed.setFault(recorder.hasFault());
   statusLed.update();
 }
