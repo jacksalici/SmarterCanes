@@ -43,6 +43,7 @@ void StatusLed::applyActiveVisual() {
   if (!active_) {
     ledOn_ = false;
     digitalWrite(pin_, LOW);
+    idlePhaseStartMs_ = millis();
   } else {
     ledOn_ = true;
     digitalWrite(pin_, HIGH);
@@ -51,12 +52,30 @@ void StatusLed::applyActiveVisual() {
 }
 
 void StatusLed::update() {
-  if (fault_ || !active_) return;  // solid (fault) or off (idle): nothing to toggle
+  if (fault_) return;  // solid: nothing to toggle
 
   const unsigned long now = millis();
-  if (now - lastToggleMs_ < kBlinkIntervalMs) return;
-  lastToggleMs_ = now;
 
-  ledOn_ = !ledOn_;
-  digitalWrite(pin_, ledOn_ ? HIGH : LOW);
+  if (active_) {
+    if (now - lastToggleMs_ < kBlinkIntervalMs) return;
+    lastToggleMs_ = now;
+    ledOn_ = !ledOn_;
+    digitalWrite(pin_, ledOn_ ? HIGH : LOW);
+    return;
+  }
+
+  // Idle: off, except for a brief heartbeat flash every kIdleFlashIntervalMs.
+  if (ledOn_) {
+    if (now - idlePhaseStartMs_ < kIdleFlashDurationMs) return;
+    ledOn_ = false;
+    digitalWrite(pin_, LOW);
+    idlePhaseStartMs_ = now;
+    return;
+  }
+
+  if (now - idlePhaseStartMs_ >= kIdleFlashIntervalMs) {
+    ledOn_ = true;
+    digitalWrite(pin_, HIGH);
+    idlePhaseStartMs_ = now;
+  }
 }

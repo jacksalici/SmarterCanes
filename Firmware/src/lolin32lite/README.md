@@ -1,6 +1,6 @@
 # Lolin32 Lite IMU Recorder
 
-A firmware for recording 6-axis IMU data (accel + gyro) plus distance-to-ground/obstacle to SD card, with button-based session control, an LED that blinks while recording, and a WiFi dashboard to download and clear recordings.
+A firmware for recording 6-axis IMU data (accel + gyro) plus distance-to-ground/obstacle to SD card, with button-based session control, an LED that blinks while recording (and idle-heartbeats/solid-faults otherwise), and a WiFi dashboard to download and clear recordings.
 
 ## Hardware
 
@@ -9,7 +9,7 @@ A firmware for recording 6-axis IMU data (accel + gyro) plus distance-to-ground/
 - **Modulino Distance** (VL53L4CD, I2C — shared bus with the IMU, SDA=GPIO26, SCL=GPIO25, address `0x29`): time-of-flight distance sensor
 - **microSD card module** (SPI, CS=GPIO5, SCK=GPIO18, MOSI=GPIO23, MISO=GPIO19): Data storage
 - **Push button** (GPIO12, active-low with internal pull-up): Gesture control
-- **Status LED** (GPIO32, through a series resistor to GND): 3 fast blinks on boot, then blinks while recording, off otherwise
+- **Status LED** (GPIO32, through a series resistor to GND): 3 fast blinks on boot, then blinks while recording, a brief heartbeat flash every 30s while idle, solid on if a fault occurs (SD card/IMU stuck at boot, or an SD write failure mid-recording)
   - Note: the Lolin32 Lite's onboard blue LED is hardwired to GPIO22 (active-low) — GPIO32 avoids sharing that pin.
 
 ## Architecture
@@ -22,9 +22,10 @@ Five-layer design:
 
 2. **StatusLed** (`StatusLed.h/.cpp`): Non-blocking LED blinker
    - 3 fast blocking blinks (100 ms on/off) at boot as a startup indicator
-   - Off while idle; blinks at a fixed 300 ms interval while active
-   - Solid on (no blinking) whenever `recorder.hasFault()` is true - an SD write/open failure - regardless of the active/idle state, so a fault is visually distinct from normal recording
-   - Driven by `recorder.isRecording()` / `recorder.hasFault()` every loop iteration
+   - Blinks at a fixed 300 ms interval while active (recording)
+   - While idle, a brief 100 ms heartbeat flash every 30s - distinguishes "idle" from "unpowered/frozen" without a full-time blink
+   - Solid on (no blinking) whenever a fault is active - `recorder.hasFault()` (an SD write/open failure mid-recording), or a boot-time init retry loop in `main.cpp` (SD card / IMU not responding) - regardless of the active/idle state, so a fault is visually distinct from either blink pattern
+   - Driven by `recorder.isRecording()` / `recorder.hasFault()` every loop iteration, and directly from `main.cpp`'s boot-time retry loop
 
 3. **ImuRecorder** (`ImuRecorder.h/.cpp`): IMU + distance sampling + file management
    - Fixed 10 ms sample interval; samples are batched in a 2 KB RAM buffer and written to SD in bulk (at most every 250 ms or when the buffer fills), rather than one SD write per sample
