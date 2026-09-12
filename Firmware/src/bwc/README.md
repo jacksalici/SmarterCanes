@@ -46,8 +46,8 @@ Five-layer design:
 
 5. **Main** (`main.cpp`): Event loop
    - Single click: start recording if idle; if already recording, mark an event on the CSV instead (LED: quick double blink)
-   - Double-click: stop with annotation 0 (LED: triple blink)
-   - Long-press: stop with annotation 1 (LED: triple blink)
+   - Double-click: stop with annotation 1 (LED: triple blink)
+   - Long-press: stop with annotation 0 (LED: triple blink)
 
 ## Build & Deploy
 
