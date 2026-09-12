@@ -1,0 +1,14 @@
+[project]
+name = "smartcane-analyzer"
+version = "0.1.0"
+description = "Analysis experiments over IMU recordings from an instrumented walking cane"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10",
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "torch>=2.6",
+]
+
+[tool.uv]
+package = false

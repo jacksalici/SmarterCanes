@@ -14,12 +14,20 @@ import numpy as np
 _MG_PER_G = 1000.0
 _MDPS_PER_DPS = 1000.0
 
-_BASE_COLUMNS = 7  # t_ms, ax_mg, ay_mg, az_mg, gx_mdps, gy_mdps, gz_mdps
-_DIST_COLUMN_NAME = "dist_mm"  # optional 8th column: cane base to ground, in mm
+# Columns every recording has, in firmware write order.
+_REQUIRED_COLUMNS = ("t_ms", "ax_mg", "ay_mg", "az_mg", "gx_mdps", "gy_mdps", "gz_mdps")
+# Columns added by later firmware revisions. They are resolved by *name*, not
+# position, so a recording may carry either, both or neither: `dist_mm` is the
+# cane base to ground distance, `event` marks the first sample after a single
+# click during recording (a user-flagged moment of interest).
+_DIST_COLUMN = "dist_mm"
+_EVENT_COLUMN = "event"
 
 # rec_00001.csv (legacy, single file) / rec_00001_seg002.csv (segmented) /
 # either with a trailing _ann{-1,0,1} stop annotation.
-_SESSION_FILENAME_RE = re.compile(r"^rec_(?P<session>\d+)(?:_seg(?P<segment>\d+))?(?:_ann-?\d+)?$")
+_SESSION_FILENAME_RE = re.compile(
+    r"^rec_(?P<session>\d+)(?:_seg(?P<segment>\d+))?(?:_ann(?P<ann>-?\d+))?$"
+)
 
 
 @dataclass
@@ -32,6 +40,8 @@ class ImuRecording:
     fs: float  # nominal sampling rate in Hz
     source: Path
     dist_mm: np.ndarray | None = None  # cane base-to-ground distance, if logged
+    event: np.ndarray | None = None  # 1 on user-marked samples, if logged
+    ann: int | None = None  # stop annotation from the filename, if present
 
     @property
     def acc_mag(self) -> np.ndarray:
@@ -44,6 +54,23 @@ class ImuRecording:
     @property
     def has_dist(self) -> bool:
         return self.dist_mm is not None
+
+    @property
+    def has_event(self) -> bool:
+        return self.event is not None
+
+
+def parse_ann(path: str | Path) -> int | None:
+    """Read the stop annotation encoded in a recording's filename.
+
+    Every segment of a session carries the same `_annY` suffix, so the label
+    can be recovered from any one of its files. Returns None for the legacy
+    filenames that have no annotation.
+    """
+    m = _SESSION_FILENAME_RE.match(Path(path).stem)
+    if not m or m.group("ann") is None:
+        return None
+    return int(m.group("ann"))
 
 
 def _read_rows(path: Path, n_columns: int) -> np.ndarray:
@@ -75,32 +102,57 @@ def _read_rows(path: Path, n_columns: int) -> np.ndarray:
     return np.array(rows)
 
 
+def _column_indices(path: Path, header: list[str]) -> dict[str, int]:
+    """Map column name to column index, validating the required columns.
+
+    Resolving by name (rather than the fixed positions the firmware happens
+    to write) is what lets one loader read every schema revision: columns
+    appended by newer firmware simply show up in the map.
+    """
+    indices = {name.strip(): i for i, name in enumerate(header)}
+    missing = [name for name in _REQUIRED_COLUMNS if name not in indices]
+    if missing:
+        raise ValueError(f"{path}: missing required column(s): {', '.join(missing)}")
+    return indices
+
+
 def load_csv(path: str | Path) -> ImuRecording:
     """Load a `rec_*.csv` IMU log.
 
-    Expected header: t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps
-    optionally followed by dist_mm (cane base to ground, from a distance
-    sensor), which recordings from newer firmware include.
+    Required header columns: t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps.
+    Newer firmware appends dist_mm (cane base to ground, from a distance
+    sensor) and event (user-marked sample); both are optional.
     """
     path = Path(path)
     with open(path, newline="", encoding="utf-8", errors="replace") as f:
         header = next(csv.reader(f))
 
-    has_dist = len(header) > _BASE_COLUMNS and header[_BASE_COLUMNS].strip() == _DIST_COLUMN_NAME
-    n_columns = _BASE_COLUMNS + 1 if has_dist else _BASE_COLUMNS
+    indices = _column_indices(path, header)
+    data = _read_rows(path, len(header))
 
-    data = _read_rows(path, n_columns)
-
-    t_ms = data[:, 0]
+    t_ms = data[:, indices["t_ms"]]
     t = (t_ms - t_ms[0]) / 1000.0
 
-    acc = data[:, 1:4] / _MG_PER_G
-    gyro = data[:, 4:7] / _MDPS_PER_DPS
-    dist_mm = data[:, _BASE_COLUMNS] if has_dist else None
+    acc = np.column_stack([data[:, indices[c]] for c in ("ax_mg", "ay_mg", "az_mg")]) / _MG_PER_G
+    gyro = (
+        np.column_stack([data[:, indices[c]] for c in ("gx_mdps", "gy_mdps", "gz_mdps")])
+        / _MDPS_PER_DPS
+    )
+    dist_mm = data[:, indices[_DIST_COLUMN]] if _DIST_COLUMN in indices else None
+    event = data[:, indices[_EVENT_COLUMN]] if _EVENT_COLUMN in indices else None
 
     fs = 1.0 / np.median(np.diff(t))
 
-    return ImuRecording(t=t, acc=acc, gyro=gyro, fs=fs, source=path, dist_mm=dist_mm)
+    return ImuRecording(
+        t=t,
+        acc=acc,
+        gyro=gyro,
+        fs=fs,
+        source=path,
+        dist_mm=dist_mm,
+        event=event,
+        ann=parse_ann(path),
+    )
 
 
 def group_sessions(paths: list[Path]) -> dict[str, list[Path]]:
@@ -154,10 +206,25 @@ def load_session(paths: list[Path]) -> ImuRecording:
     acc = np.concatenate([seg.acc for seg in segments])
     gyro = np.concatenate([seg.gyro for seg in segments])
 
+    # An optional column is only usable for the session as a whole if every
+    # segment carries it - a half-populated array would silently misalign.
     dist_mm = None
     if all(seg.has_dist for seg in segments):
         dist_mm = np.concatenate([seg.dist_mm for seg in segments])
 
+    event = None
+    if all(seg.has_event for seg in segments):
+        event = np.concatenate([seg.event for seg in segments])
+
     fs = 1.0 / np.median(np.diff(t))
 
-    return ImuRecording(t=t, acc=acc, gyro=gyro, fs=fs, source=paths[0], dist_mm=dist_mm)
+    return ImuRecording(
+        t=t,
+        acc=acc,
+        gyro=gyro,
+        fs=fs,
+        source=paths[0],
+        dist_mm=dist_mm,
+        event=event,
+        ann=parse_ann(paths[0]),
+    )
