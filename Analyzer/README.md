@@ -2,6 +2,12 @@
 
 Analyzes IMU logs recorded from an instrumented walking cane.
 
+- **[EXPERIMENT.md](EXPERIMENT.md)** — the experimental design: what is measured, and why each choice
+  was made.
+- **[RESULTS.md](RESULTS.md)** — the measured outcomes, including the pipeline comparison and the controlled
+  comparisons.
+- This file — code layout and command reference.
+
 ## Architecture
 
 - `main.py` — CLI entry point, dispatches to experiments; owns all printing and plotting
@@ -20,9 +26,19 @@ Analyzes IMU logs recorded from an instrumented walking cane.
   magnitude away from 1 g, with the height threshold set from each recording's own noise floor
   (mean + k·std of `|acc|-1g`). A cane strike is a broadband mechanical shock rather than a smooth
   oscillation, so the earlier 0.5–3.5 Hz cadence band-pass smeared one impulse into a ringing filter
-  response and over-counted by roughly 3×. Cross-checked against a ground-truth count derived from the
-  distance sensor with a three-band hysteresis latch (`dist_mm`: 110–120 mm resting, >125 mm tip lifted,
-  <110 mm sensor error).
+  response and over-counted by roughly 3×. A strike must also clear a 1.15 s refractory period, stand
+  out from its surroundings by half the detection height, and exceed an absolute 0.30 g floor — the
+  first two suppress a strike's own ringing, the third keeps a motionless recording from reporting
+  steps at all. Cross-checked against a ground-truth count derived from the distance sensor with a
+  three-band hysteresis latch (`dist_mm`: 90–110 mm resting, >118 mm tip lifted, <90 mm sensor error).
+
+- **step-accuracy** (`exp/step_accuracy.py`) — scores the detected count against that ground truth,
+  per 30-second window. Windows are dropped when the ground truth cannot support a comparison: fewer
+  than `--min-gt-steps` steps, or a ground-truth cadence below `--min-gt-cadence`, which is how a
+  distance-sensor failure shows up (if the tip reading never falls back into the resting band the latch
+  never re-arms, so real steps go uncounted). Scoring against those windows measures the sensor rather
+  than the detector. Mean accuracy is **0.952** over the 45 scoreable windows, 0.934 under nested
+  leave-one-session-out cross-validation — see [RESULTS.md](RESULTS.md) §1.
 
 - **step-ae** (`exp/step_ae.py`) — an autoencoder over aligned multi-step windows, trained on
   normal data only, using reconstruction error as an anomaly score. Where step-count answers *how many*
@@ -157,6 +173,9 @@ uv run main.py step-count data/rec_00004_seg000_ann1.csv --plot out.png
 # step counting: every recording in a directory, grouped into sessions
 uv run main.py step-count data --plot-dir out/
 
+# step-count accuracy against the dist_mm ground truth, per window
+uv run main.py step-accuracy data --plot-dir out/step_accuracy
+
 # autoencoder: train on all recordings and score them
 uv run main.py step-ae data --plot-dir out/step_ae
 
@@ -202,8 +221,10 @@ separate a ranking failure from an operating-point failure.
 gathered from a recording depend on a step detector, and every step detector here degrades on abnormal
 gait: a shuffled or dragged step produces neither a clean acceleration shock nor a tip lift past the
 `dist_mm` threshold, so the `dist_mm` "ground truth" is no more trustworthy on these recordings than
-the accelerometer is. Step anchoring yields one window each from rec_00018 and rec_00027 against 121
-from the normal rec_00017 — the recordings that matter most are the ones least measured. `--anchor
+the accelerometer is. How badly that bites depends on how the detector is tuned, which is the deeper
+objection: the size of the test set becomes a function of a threshold nobody set with evaluation in
+mind. On the current tuning, step anchoring yields 4–16 windows from each abnormal recording against
+109 from the normal rec_00017, and 196 labelled windows against 290 for sliding. `--anchor
 slide` (the default here) cuts a window every `--hop-s` seconds regardless of content, so coverage is
 uniform in time and identical across classes.
 
@@ -224,18 +245,22 @@ only the windows where no step was detected at all. Crucially this no longer *ga
 sliding anchors a window is scored either way, so a failed step detection costs a fallback rather than
 a missing window.
 
-The branch split turns out to be a diagnostic in its own right. On training data 91% of windows take
-the step branch and on the normal test session 93% do, while the abnormal recordings fall back 43–93%
-of the time — how often a recording needs the fallback is a readout of how much its gait still looks
-like stepping.
+The branch split is worth watching, though how much it says depends on the step detector's tuning. On
+the current tuning 94% of training windows take the step branch and 93% of the normal test session's
+do, while the abnormal recordings fall back between 7% and 60% — informative at the high end
+(rec_00025 60%, rec_00028 56%) but not a clean readout: rec_00021 falls back only 7%, the same as
+normal gait. Under an earlier, stricter detector tuning the same recordings fell back 43–93% of the
+time, so treat the split as a diagnostic of the *detector*, not a second anomaly score.
 
 The conv model is also the smaller one — about 34k parameters against 279k for the MLP at the default
 geometry, which matters when there are a few hundred training windows — and being shift-tolerant it
 copes with whatever residual phase each policy leaves behind.
 
-**On reading the ablation.** The better variants differ by a few thousandths of AUPRC, which is the
-same order as the spread across random seeds (±0.005 over five seeds). Use `--ablation-seeds N` to get
-mean ± spread rather than trusting a single run to rank them.
+**On reading the pipeline comparisons in [RESULTS.md](RESULTS.md).** The better variants differ by a
+few thousandths of AUPRC, which is the same order as the spread across random seeds (±0.005 over five
+seeds), so no single run ranks them. Those comparisons were measured with a variant runner that has
+since been removed — the CLI now runs only the shipped configuration — so reproducing them means
+driving `run_ae_anomaly` directly with the overrides and seeds each table names.
 
 ### The distance channel
 
@@ -269,26 +294,33 @@ inside every session keeps the validation set representative of all of them.
 
 ### Output
 
-`--out-dir` (default `out/ae_anomaly/`) receives `REPORT.md`, `sessions.csv`, `windows.csv` and four
-plots: `overview.png` (loss curves, score separation, ROC, precision-recall), `sessions.png`
-(per-session flag rate and score spread), `traces.png` (anomaly score against time for every test
-session) and `examples.png` (best and worst reconstructions with per-channel error).
+`--out-dir` (default `out/ae_anomaly/`) receives CSVs and plots, and nothing else — there is no
+generated prose, so [RESULTS.md](RESULTS.md) is the only place a claim is made about what any of it
+means.
+
+| output | contents |
+|---|---|
+| `metrics.csv` | headline metrics at the calibrated threshold, plus the false-alarm budget swept |
+| `sessions.csv` | one row per test session |
+| `windows.csv` | one row per scoreable test window |
+| `unlabelled_runs.csv` | flagged stretches inside the `ann-1` recording's unlabelled span |
+| `overview` | loss curves, score separation, ROC, precision-recall |
+| `error_by_type` | reconstruction error, normal against each anomaly type |
+| `sessions` | per-session flag rate and score spread |
+| `traces` | anomaly score against time for every test session |
+| `examples` | best and worst reconstructions, with per-channel error |
+
+Every plot is written twice, as `.png` and as `.pdf` — raster to look at, vector to print.
 
 ```bash
 # the headline run - bare defaults are the best-measured configuration
 uv run main.py ae-anomaly
-
-# with the pipeline comparison (slower - it retrains eight variants)
-uv run main.py ae-anomaly --ablation
 
 # the original pipeline, for comparison
 uv run main.py ae-anomaly --anchor step --model mlp --align-mode xcorr --latent 8 --no-dist --score-agg mean
 
 # score from the IMU alone, without the cane-tip distance sensor
 uv run main.py ae-anomaly --no-dist
-
-# rank the variants against seed noise rather than a single run
-uv run main.py ae-anomaly --ablation --ablation-seeds 3
 
 # a stricter false-alarm budget
 uv run main.py ae-anomaly --threshold-pct 99

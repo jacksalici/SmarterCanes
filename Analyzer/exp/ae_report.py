@@ -1,8 +1,14 @@
-"""Reporting for the `ae-anomaly` experiment: CSV, markdown and plots.
+"""Outputs for the `ae-anomaly` experiment: CSV tables and plots.
 
 Kept apart from `ae_anomaly.py` so the evaluation itself stays free of
 formatting concerns, and apart from `main.py` because there is rather more of
 it than the other experiments' plotting.
+
+Every figure is written twice, as PNG and as PDF: the raster copy for quick
+viewing, the vector copy for anything that gets printed or projected. Numbers
+are written as CSV only - there is deliberately no generated prose, so the
+written-up interpretation in RESULTS.md is the only place a claim is made about
+what these outputs mean.
 """
 
 from __future__ import annotations
@@ -16,8 +22,35 @@ from exp.ae_anomaly import LABEL_ANOMALY, LABEL_DROP, LABEL_NORMAL, AEAnomalyRes
 from utils.io import DIST_ERROR_FLOOR_MM
 from utils.metrics import pr_curve, roc_curve, threshold_metrics
 
+def _save(fig, out_path: Path, dpi: int = 150) -> None:
+    """Write a figure as both PNG and PDF, whichever suffix was asked for."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path.with_suffix(".png"), dpi=dpi)
+    fig.savefig(out_path.with_suffix(".pdf"))
+
+
 _NORMAL_COLOR = "tab:blue"
 _ANOMALY_COLOR = "tab:red"
+
+# Reds for the anomaly types, in the order they appear in description.csv.
+# Spread over hue and lightness rather than a single-hue ramp: with transparency
+# on, neighbouring steps of one hue become impossible to tell apart.
+_ANOMALY_SHADES = (
+    "#FFA05C",  # apricot
+    "#F2542D",  # vermilion
+    "#D01C1F",  # red
+    "#9B1B5E",  # crimson-magenta
+    "#5A0E33",  # dark wine
+)
+
+
+def _anomaly_palette(n: int) -> list[str]:
+    """`n` distinguishable reds, falling back to a colormap if there are many."""
+    if n <= len(_ANOMALY_SHADES):
+        return list(_ANOMALY_SHADES[:n])
+    import matplotlib.pyplot as plt
+
+    return [plt.get_cmap("Reds")(v) for v in np.linspace(0.35, 0.95, n)]
 
 
 def _merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -70,16 +103,6 @@ def _run_bounds(w_set, result, run: list[int]) -> tuple[float, float, float]:
     )
 
 
-def _counts_str(counts: dict[str, int]) -> str:
-    total = max(1, sum(counts.values()))
-    names = {"step": "step", "xcorr": "correlation fallback", "none": "unshifted"}
-    return ", ".join(
-        f"{counts[k]} {names.get(k, k)} ({counts[k] / total:.0%})"
-        for k in ("step", "xcorr", "none")
-        if k in counts
-    )
-
-
 def _label_name(label: int) -> str:
     return {LABEL_ANOMALY: "anomalous", 0: "normal", LABEL_DROP: "unlabelled"}[label]
 
@@ -123,65 +146,6 @@ def write_window_csv(result: AEAnomalyResult, out_path: Path) -> None:
                     "yes" if result.scores[i] > result.threshold else "no",
                 ]
             )
-
-
-def _agg(values: list[float], nd: int = 3) -> str:
-    """mean, with the spread appended once there is more than one run."""
-    if len(values) == 1:
-        return _fmt(values[0], nd)
-    return f"{np.mean(values):.{nd}f} ± {np.std(values):.{nd}f}"
-
-
-def write_ablation_markdown(
-    ablation: list[tuple[str, list["AEAnomalyResult"]]], chosen: "AEAnomalyResult"
-) -> list[str]:
-    """Markdown table comparing pipeline variants, plus a reading of it."""
-    n_seeds = len(ablation[0][1]) if ablation else 1
-    lines = ["## Pipeline ablation", ""]
-    lines.append(
-        "Each row changes one thing from the row above. All of them share the training "
-        "data, the test data, the labels and the false-alarm budget, so the differences "
-        "are the pipeline's alone. `windows` is how many labelled test windows the variant "
-        "produced at all — the first row is the point about step anchoring, not a detail."
-    )
-    if n_seeds > 1:
-        lines.append("")
-        lines.append(
-            f"Each row is {n_seeds} runs at different random seeds, reported as mean ± standard "
-            "deviation. The spread is the thing to read the gaps against: several of these "
-            "variants differ by less than it."
-        )
-    lines.append("")
-    lines.append("| variant | labelled windows | AUPRC | ROC-AUC | F1 | recall | sessions right |")
-    lines.append("|---|---|---|---|---|---|---|")
-    for name, runs in ablation:
-        star = " ←" if "mixed align + conv + dist" in name else ""
-        sess = [sum(s.correct for s in r.sessions) for r in runs]
-        n_sess = len(runs[0].sessions)
-        sess_str = f"{sess[0]}/{n_sess}" if n_seeds == 1 else f"{np.mean(sess):.1f}/{n_sess}"
-        lines.append(
-            f"| {name}{star} | {int(runs[0].y_true.size)} | "
-            f"{_agg([r.auprc for r in runs])} | {_agg([r.roc_auc for r in runs])} | "
-            f"{_agg([r.window_metrics.f1 for r in runs])} | "
-            f"{_agg([r.window_metrics.recall for r in runs])} | {sess_str} |"
-        )
-    lines.append("")
-
-    first = ablation[0][1][0] if ablation else None
-    if first is not None:
-        per_session = sorted(first.sessions, key=lambda s: s.n_labeled)[:3]
-        thin = ", ".join(f"rec_{s.session_id} ({s.n_labeled})" for s in per_session)
-        lines.append(
-            f"The first row is the original pipeline. Its problem is visible in the window "
-            f"count: step anchoring produced {int(first.y_true.size)} labelled windows against "
-            f"{int(chosen.y_true.size)} for the sliding variant, and the shortfall is "
-            f"concentrated on the abnormal recordings — the thinnest were {thin}. A detector "
-            f"cannot be said to have been tested on a recording it drew one window from, and "
-            f"the reason it drew one is that the step detector failed there, which is to say "
-            f"it failed *because* the gait was abnormal."
-        )
-        lines.append("")
-    return lines
 
 
 def plot_overview(result: AEAnomalyResult, out_path: Path) -> None:
@@ -250,7 +214,7 @@ def plot_overview(result: AEAnomalyResult, out_path: Path) -> None:
     axes[1, 1].legend(fontsize=8)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _save(fig, out_path)
     plt.close(fig)
 
 
@@ -302,7 +266,7 @@ def plot_sessions(result: AEAnomalyResult, out_path: Path) -> None:
     axes[1].legend(fontsize=8)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _save(fig, out_path)
     plt.close(fig)
 
 
@@ -367,7 +331,7 @@ def plot_traces(result: AEAnomalyResult, out_path: Path) -> None:
         fontsize=11,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.97))
-    fig.savefig(out_path, dpi=150)
+    _save(fig, out_path)
     plt.close(fig)
 
 
@@ -408,13 +372,23 @@ def group_scores_by_type(
 
 
 def plot_error_histogram(result: AEAnomalyResult, out_path: Path) -> None:
-    """Reconstruction error by anomaly type: normal in blue, each type a shade of red.
+    """Reconstruction error by anomaly type: normal in blue, each type its own red.
 
-    Stacked rather than overlaid, so the bars add up to the real count per bin
-    instead of hiding each other, and on a log x-axis because the anomalous
-    tail runs orders of magnitude past the normal bulk. The strip plot beneath
-    carries what a histogram cannot: how much of each *type* sits on the wrong
-    side of the threshold, when a type contributes only a dozen windows.
+    Deliberately bare - no title, axis labels, tick values or threshold line -
+    so the figure carries only the distributions, their medians and the legend,
+    and can be dropped into a paper or slide that supplies its own caption and
+    scale. Written as both PNG and PDF, the PDF being the one to embed. The dashed vertical line in each colour is that type's median, which
+    with the numeric axis gone is the only quantitative cue the figure keeps.
+
+    Overlaid with transparency rather than stacked: stacking answers "how many
+    windows in this bin", but the question here is where each *type* sits
+    relative to normal gait, and that comparison needs the distributions drawn
+    over one another. Each is given a solid outline at full opacity so a type
+    stays traceable where three or four of them overlap.
+
+    The reds are spread across hue as well as lightness - apricot through
+    vermilion and crimson to near-black wine - because a single-hue ramp leaves
+    adjacent types indistinguishable once they are washed out by alpha.
     """
     import matplotlib
 
@@ -422,74 +396,42 @@ def plot_error_histogram(result: AEAnomalyResult, out_path: Path) -> None:
     import matplotlib.pyplot as plt
 
     normal, groups = group_scores_by_type(result)
-    # Darkening reds, in the order the types appear in description.csv, so the
-    # legend reads as one ordered scale rather than an arbitrary palette.
-    shades = plt.get_cmap("Reds")(np.linspace(0.38, 0.92, max(len(groups), 1)))
+    shades = _anomaly_palette(len(groups))
 
     all_scores = np.concatenate([normal] + [g for _, g, _ in groups])
-    bins = np.geomspace(max(all_scores.min(), 1e-6), all_scores.max(), 46)
+    bins = np.geomspace(max(all_scores.min(), 1e-6), all_scores.max(), 42)
 
-    fig, axes = plt.subplots(
-        2, 1, figsize=(12, 9), gridspec_kw={"height_ratios": [2.1, 1]}, sharex=True
-    )
+    fig, ax = plt.subplots(figsize=(12, 3.6))
 
-    labels = [f"Normal gait  (n={normal.size}, 1 rec)"] + [
-        f"{name}  (n={g.size}, {n} rec)" for name, g, n in groups
-    ]
-    axes[0].hist(
-        [normal] + [g for _, g, _ in groups],
-        bins=bins,
-        stacked=True,
-        color=[_NORMAL_COLOR, *shades],
-        label=labels,
-        edgecolor="white",
-        linewidth=0.3,
-    )
-    axes[0].axvline(result.threshold, color="black", linestyle="--", linewidth=1.2)
-    axes[0].annotate(
-        f"threshold {result.threshold:.3f}\n"
-        f"(p{result.config.threshold_pct:g} of held-out normal)",
-        xy=(result.threshold, axes[0].get_ylim()[1] * 0.96),
-        xytext=(6, 0), textcoords="offset points",
-        ha="left", va="top", fontsize=8,
-    )
-    axes[0].set_xscale("log")
-    axes[0].set_ylabel("windows")
-    axes[0].set_title(
-        "Reconstruction error by anomaly type "
-        f"({len(result.test_windows.channels)} channels, "
-        f"align={result.config.align_mode})"
-    )
-    axes[0].legend(fontsize=8, loc="upper right", framealpha=0.95)
-
-    # Per-type strip: every window as a point, with the median marked.
-    rng = np.random.default_rng(0)
-    rows = [("Normal gait", normal, _NORMAL_COLOR)] + [
+    series = [("Normal gait", normal, _NORMAL_COLOR)] + [
         (name, g, shades[i]) for i, (name, g, _) in enumerate(groups)
     ]
-    for y, (name, scores, color) in enumerate(rows):
-        jitter = rng.uniform(-0.28, 0.28, scores.size)
-        flagged = scores > result.threshold
-        axes[1].scatter(scores, np.full(scores.size, y) + jitter, s=11, color=color,
-                        alpha=0.75, linewidths=0)
-        axes[1].scatter(np.median(scores), y, marker="|", s=420, color="black",
-                        linewidths=1.6, zorder=3)
-        axes[1].text(
-            all_scores.max() * 1.15, y,
-            f"{int(flagged.sum())}/{scores.size} flagged",
-            va="center", fontsize=8, color="black",
+    for name, scores, color in series:
+        ax.hist(scores, bins=bins, color=color, alpha=0.45, zorder=2)
+        # Full-opacity outline, so an overlapped distribution stays readable.
+        ax.hist(
+            scores, bins=bins, histtype="step", color=color, linewidth=1.6, zorder=3,
+            label=name,
         )
-    axes[1].axvline(result.threshold, color="black", linestyle="--", linewidth=1.2)
-    axes[1].set_yticks(range(len(rows)))
-    axes[1].set_yticklabels([name for name, _, _ in rows], fontsize=8)
-    axes[1].set_ylim(-0.7, len(rows) - 0.3)
-    axes[1].set_xlim(right=all_scores.max() * 2.6)
-    axes[1].invert_yaxis()
-    axes[1].set_xlabel("mean squared reconstruction error (log scale)")
-    axes[1].set_title("Every scoreable window, by type (black tick = median)", fontsize=10)
+        # Median per type. With no axis scale on the figure, these are what let
+        # a reader place the distributions against one another - the spacing
+        # between two medians is the only quantitative cue left.
+        ax.axvline(
+            np.median(scores), color=color, linestyle=(0, (4, 2)), linewidth=2.0, zorder=4
+        )
+
+    ax.set_xscale("log")
+    ax.tick_params(
+        axis="both", which="both",
+        labelbottom=False, labelleft=False, length=0,
+    )
+    ax.legend(fontsize=13, loc="upper right", framealpha=0.92, borderpad=0.7,
+              labelspacing=0.45, handlelength=1.6)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _save(fig, out_path, dpi=200)
     plt.close(fig)
 
 
@@ -544,257 +486,71 @@ def plot_examples(result: AEAnomalyResult, out_path: Path) -> None:
 
     axes[-1, 0].set_xlabel("time within window (s)")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _save(fig, out_path)
     plt.close(fig)
 
 
-def _fmt(x: float, nd: int = 3) -> str:
-    return "n/a" if x != x else f"{x:.{nd}f}"
+def write_metrics_csv(result: AEAnomalyResult, out_path: Path) -> None:
+    """The headline numbers and the operating-point sweep, as one flat table.
 
-
-def write_markdown(
-    result: AEAnomalyResult,
-    out_path: Path,
-    plot_names: dict[str, str],
-    ablation: list[tuple[str, AEAnomalyResult]] | None = None,
-) -> None:
-    """A standalone report: the protocol, the numbers, and the per-session verdicts."""
-    c = result.config
+    Replaces the prose report: the same measurements, in the one format that
+    can be re-read without a human having to trust a sentence. Two blocks -
+    `headline` rows are single values at the calibrated threshold, `operating
+    point` rows sweep the false-alarm budget so the cost of that choice is
+    visible. Every budget row is reachable without consulting a test label.
+    """
     m, o = result.window_metrics, result.oracle_metrics
-    w_set = result.test_windows
-    n_train = int((result.train_split == "train").sum())
-    n_val = int((result.train_split == "val").sum())
-
-    hit = [s for s in result.sessions if s.correct]
-    miss = [s for s in result.sessions if not s.correct]
-
-    lines: list[str] = []
-    a = lines.append
-
-    a("# Autoencoder anomaly detection on cane gait — evaluation report")
-    a("")
-    a(f"Model `{c.model}`, {w_set.window_s:g} s windows at {w_set.fs:g} Hz "
-      f"({w_set.window_len} samples × {len(w_set.channels)} channels: "
-      f"{', '.join(w_set.channels)}), `anchor={c.anchor}`, "
-      f"`align_mode={c.align_mode}`, latent {c.latent}.")
-    a("")
-
-    a("## Protocol")
-    a("")
-    a(f"- **Train** `data/train` — {len(np.unique(result.train_windows.session_ids))} normal "
-      f"session(s), {result.train_windows.n_windows} windows "
-      f"({n_train} train / {n_val} validation, split on contiguous time blocks with a "
-      f"one-window guard band).")
-    a(f"- **Test** `data/test` — {len(result.sessions)} session(s), {w_set.n_windows} windows, "
-      f"of which {int(result.scoreable.sum())} carry a label.")
-    a("- The alignment template, the normalization statistics, the weights and the decision "
-      "threshold are all fitted on training data only and applied frozen to the test set. "
-      "No test label enters the pipeline at any point.")
-    a(f"- **Threshold** = p{c.threshold_pct:g} of the reconstruction error on held-out normal "
-      f"*training* windows = `{result.threshold:.5f}`.")
-    a("")
-    a("Labels follow the filename annotation: `ann0` normal, `ann1` anomalous throughout. "
-      "For the single `ann-1` recording only windows overlapping an `event` marker are "
-      "positives — the rest are dropped rather than counted as normal, since nothing "
-      "records where the abnormal stretch ends.")
-    a("")
-
-    if c.align_mode in ("step", "mixed"):
-        a("### Alignment policy")
-        a("")
-        train_counts = result.train_windows.source_counts()
-        test_counts = result.test_windows.source_counts()
-        a(f"`align_mode={c.align_mode}` places a window by centering the nearest *detected step*, "
-          f"and falls back to correlating the acceleration magnitude against the normal template "
-          f"only where no step was detected within ±{c.max_lag_s:g} s. The step branch is preferred "
-          f"because it has no bias: it is placement, not matching, and the step detector never sees "
-          f"the template. Correlation picks the shift that makes a window look most like normal "
-          f"gait, which is a favour done to precisely the windows that should score badly.")
-        a("")
-        a(f"Branch split — training: {_counts_str(train_counts)}; "
-          f"test: {_counts_str(test_counts)}.")
-        a("")
-        a("The split is not incidental. How often a recording needs the fallback is itself a "
-          "readout of how much its gait still looks like stepping:")
-        a("")
-        a("| session | label | windows | step branch | fallback | fallback rate |")
-        a("|---|---|---|---|---|---|")
-        w = result.test_windows
-        for sess in sorted(result.sessions, key=lambda s: (s.label, s.session_id)):
-            mask = w.session_ids == sess.session_id
-            src = w.align_source[mask]
-            n_step = int(np.sum(src == "step"))
-            n_fall = int(np.sum(src == "xcorr"))
-            total = max(1, int(mask.sum()))
-            a(f"| rec_{sess.session_id} | {_label_name(sess.label)} | {int(mask.sum())} | "
-              f"{n_step} | {n_fall} | {n_fall / total:.0%} |")
-        a("")
-
-    a("## Window-level results")
-    a("")
-    a(f"{int(result.y_true.size)} labelled windows, "
-      f"{int(result.y_true.sum())} anomalous ({result.prevalence:.1%} prevalence).")
-    a("")
-    a("| metric | value | note |")
-    a("|---|---|---|")
-    a(f"| **AUPRC** | **{_fmt(result.auprc)}** | threshold-free; "
-      f"{result.prevalence:.3f} is chance at this prevalence |")
-    a(f"| **ROC-AUC** | **{_fmt(result.roc_auc)}** | threshold-free; 0.5 is chance |")
-    a(f"| **F1** | **{_fmt(m.f1)}** | at the calibrated threshold |")
-    a(f"| **Accuracy** | **{_fmt(m.accuracy)}** | at the calibrated threshold |")
-    a(f"| Precision | {_fmt(m.precision)} | |")
-    a(f"| Recall | {_fmt(m.recall)} | |")
-    a(f"| Specificity | {_fmt(m.specificity)} | |")
-    a(f"| Balanced accuracy | {_fmt(m.balanced_accuracy)} | |")
-    a(f"| F1 at the best possible threshold | {_fmt(o.f1)} | oracle — peeks at test labels, "
-      f"not an achievable operating point |")
-    a("")
-    a(f"Confusion at the calibrated threshold: TP {m.tp}, FP {m.fp}, TN {m.tn}, FN {m.fn}.")
-    a("")
-    a("The gap between F1 and the oracle F1 is the part of the loss that is threshold "
-      "placement rather than ranking: AUPRC and ROC-AUC measure whether the score orders "
-      "the windows correctly at all, F1 measures whether the cut lands in the right place.")
-    a("")
-
-    a("### Choice of operating point")
-    a("")
-    a("The threshold is a percentile of the error on held-out normal *training* windows, "
-      "which makes it a stated false-alarm budget rather than something tuned on results: "
-      "p99 means \"accept a 1% false-alarm rate on normal gait\". The table below is that "
-      "budget swept, to show what the choice costs. Every row is reachable without "
-      "consulting a test label.")
-    a("")
-    a("| budget | threshold | precision | recall | F1 | accuracy | specificity |")
-    a("|---|---|---|---|---|---|---|")
-    for pct in (90.0, 95.0, 97.5, 99.0, 100.0):
-        thr = float(np.percentile(result.val_scores, pct))
-        tm = threshold_metrics(result.y_true, result.y_score, thr)
-        star = " ←" if pct == c.threshold_pct else ""
-        a(f"| p{pct:g}{star} | {thr:.5f} | {_fmt(tm.precision)} | {_fmt(tm.recall)} | "
-          f"{_fmt(tm.f1)} | {_fmt(tm.accuracy)} | {_fmt(tm.specificity)} |")
-    a("")
-
-    a("## Per-session results")
-    a("")
-    a(f"A session counts as *detected* when more than half its scoreable windows are flagged. "
-      f"**{len(hit)}/{len(result.sessions)}** sessions came out right "
-      f"({result.session_accuracy:.0%}).")
-    a("")
-    a("| session | label | description | windows | flagged | flag rate | median error | "
-      "max error | verdict |")
-    a("|---|---|---|---|---|---|---|---|---|")
-    for s in sorted(result.sessions, key=lambda s: (s.label, s.session_id)):
-        a(f"| rec_{s.session_id} | {_label_name(s.label)} | {s.description or '—'} | "
-          f"{s.n_labeled} | {s.n_flagged} | {s.flag_rate:.2f} | {s.median_score:.4f} | "
-          f"{s.max_score:.4f} | {'✅ correct' if s.correct else '❌ **missed**'} |")
-    a("")
-
-    if miss:
-        a("### Where it fails")
-        a("")
-        for s in miss:
-            kind = "false negative" if s.label == LABEL_ANOMALY else "false positive"
-            a(f"- **rec_{s.session_id}** ({kind}) — {s.description or 'no description'}. "
-              f"{s.n_flagged}/{s.n_labeled} windows flagged, median error "
-              f"{s.median_score:.4f} against a threshold of {result.threshold:.4f}.")
-        a("")
-    else:
-        a("Every test session came out on the right side.")
-        a("")
-
-    if c.with_dist:
-        a("## The distance channel")
-        a("")
-        a("`dist_mm` — the cane tip's height above the ground — is included here as an eighth "
-          "input channel. It is normally excluded by default because it is the sensor the step "
-          "detector treats as ground truth, so feeding it to a model that is also *anchored* on "
-          "detected steps would be circular. That objection is weaker here: with sliding anchors "
-          "the step detector no longer decides which windows exist, so the distance reading is "
-          "just another sensor.")
-        a("")
-        a("Readings below the sensor's error floor "
-          f"({DIST_ERROR_FLOOR_MM:g} mm) are measurement failures rather than a tip on the "
-          "ground, and are clamped to the floor exactly as the step detector clamps them. That "
-          "clamping matters, because dropout is not evenly spread:")
-        a("")
-        a("| session | label | dropout clamped | description |")
-        a("|---|---|---|---|")
-        for sess in sorted(result.sessions, key=lambda s: (s.label, s.session_id)):
-            frac = sess.dist_clipped_frac
-            a(f"| rec_{sess.session_id} | {_label_name(sess.label)} | "
-              f"{'—' if frac is None else f'{frac:.1%}'} | {sess.description or '—'} |")
-        a("")
-        a("Two sessions carry real dropout and both are abnormal, so for **rec_00026** and "
-          "**rec_00028** part of any gain from this channel could be the model recognising a "
-          "sensor losing its return rather than a gait going wrong. The other ten test sessions "
-          "and all five training sessions are clean, so the improvement seen on the tremor, "
-          "short-step and unsteadiness recordings cannot be explained that way — for those, the "
-          "channel is carrying genuine tip-height information.")
-        a("")
-
-    partial = [s for s in result.sessions if s.ann == -1]
-    if partial:
-        a("## The partially-annotated recording")
-        a("")
-        for sess in partial:
-            runs = unlabelled_flagged_runs(result, sess.session_id)
-            n_unlabelled = int(
-                np.sum(
-                    (w_set.session_ids == sess.session_id) & (result.labels == LABEL_DROP)
-                )
-            )
-            a(f"`rec_{sess.session_id}` ({sess.description or 'no description'}) is annotated "
-              f"`ann-1`: a recording that is mostly ordinary walking but contains at least one "
-              f"abnormal moment, located only by an in-recording `event` click. It yields "
-              f"{sess.n_labeled} labelled window(s) around that marker — all "
-              f"{sess.n_flagged} of them flagged — and {n_unlabelled} unlabelled windows that "
-              f"are scored but excluded from every metric above.")
-            a("")
-            if runs:
-                a(f"Those excluded windows are not quiet. The detector fires on "
-                  f"**{len(runs)} separate stretch(es)** of the unannotated part:")
-                a("")
-                a("| stretch | peak error | vs threshold |")
-                a("|---|---|---|")
-                for lo, hi, peak in runs:
-                    a(f"| {lo:.1f}–{hi:.1f} s | {peak:.3f} | "
-                      f"{peak / result.threshold:.1f}× |")
-                a("")
-                a("This cuts both ways and the recording cannot settle it. If the session "
-                  "contains several falls and only one was clicked, these are correct "
-                  "detections that the labels cannot credit; if it contains exactly one, they "
-                  "are false positives that the metrics above never charged. Either way the "
-                  "numbers in this report exclude them, so none of them helped the score — "
-                  "and the description of this recording says *falls*, plural.")
-            else:
-                a("No unlabelled stretch of this recording exceeded the threshold.")
-            a("")
-
-    if ablation:
-        lines.extend(write_ablation_markdown(ablation, result))
-
-    a("## Plots")
-    a("")
-    for caption, name in plot_names.items():
-        a(f"### {caption}")
-        a("")
-        a(f"![{caption}]({name})")
-        a("")
-
-    a("## Caveats")
-    a("")
-    a(f"- Training data is {len(np.unique(result.train_windows.session_ids))} session(s) of one "
-      "walker. Nothing here shows the model generalizes to a different person or a "
-      "differently-mounted cane.")
-    a("- Normal test windows come from a single session (rec_00017), so the false-positive "
-      "rate is measured on one walk and is correspondingly uncertain.")
-    a("- The `ann1` recordings are labelled anomalous end to end, including the seconds of "
-      "ordinary walking that inevitably start and finish each one. Some windows counted as "
-      "false negatives are windows of genuinely normal gait inside an anomalous recording.")
-    a("- Sliding windows overlap, so the labelled windows are not independent samples; "
-      "treat the metrics as descriptive of these recordings, not as estimates with "
-      "confidence intervals.")
-    a("")
-
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text("\n".join(lines), encoding="utf-8")
+    with open(out_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["block", "key", "value"])
+        for k, v in [
+            ("n_labelled_windows", int(result.y_true.size)),
+            ("prevalence", f"{result.prevalence:.4f}"),
+            ("threshold", f"{result.threshold:.6f}"),
+            ("auprc", f"{result.auprc:.4f}"),
+            ("roc_auc", f"{result.roc_auc:.4f}"),
+            ("f1", f"{m.f1:.4f}"),
+            ("accuracy", f"{m.accuracy:.4f}"),
+            ("precision", f"{m.precision:.4f}"),
+            ("recall", f"{m.recall:.4f}"),
+            ("specificity", f"{m.specificity:.4f}"),
+            ("balanced_accuracy", f"{m.balanced_accuracy:.4f}"),
+            ("oracle_f1", f"{o.f1:.4f}"),
+            ("tp", int(m.tp)), ("fp", int(m.fp)), ("tn", int(m.tn)), ("fn", int(m.fn)),
+            ("sessions_correct", sum(s.correct for s in result.sessions)),
+            ("sessions_total", len(result.sessions)),
+        ]:
+            w.writerow(["headline", k, v])
+
+        w.writerow([])
+        w.writerow(["operating point", "budget", "threshold", "precision", "recall",
+                    "f1", "accuracy", "specificity", "is_default"])
+        for pct in (90.0, 95.0, 97.5, 99.0, 100.0):
+            thr = float(np.percentile(result.val_scores, pct))
+            tm = threshold_metrics(result.y_true, result.y_score, thr)
+            w.writerow(["operating point", f"p{pct:g}", f"{thr:.6f}",
+                        f"{tm.precision:.4f}", f"{tm.recall:.4f}", f"{tm.f1:.4f}",
+                        f"{tm.accuracy:.4f}", f"{tm.specificity:.4f}",
+                        "yes" if pct == result.config.threshold_pct else ""])
+
+
+def write_unlabelled_runs_csv(result: AEAnomalyResult, out_path: Path) -> None:
+    """Flagged stretches inside the `ann-1` recording's *unlabelled* span.
+
+    These windows are scored but excluded from every metric, because nothing in
+    the recording says where its abnormal stretch ends. They are written out
+    rather than dropped because what the detector does there is the one piece of
+    evidence about whether that recording holds more than the single clicked
+    moment - and it cannot be settled from the labels either way.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["session", "start_s", "end_s", "peak_error", "times_threshold"])
+        for sess in result.sessions:
+            if sess.ann != -1:
+                continue
+            for start, end, peak in unlabelled_flagged_runs(result, sess.session_id):
+                w.writerow([f"rec_{sess.session_id}", f"{start:.1f}", f"{end:.1f}",
+                            f"{peak:.3f}", f"{peak / result.threshold:.1f}"])

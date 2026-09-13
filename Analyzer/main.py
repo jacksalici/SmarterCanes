@@ -20,15 +20,16 @@ from exp.step_ae import (
     StepAEConfig,
     run_step_ae,
 )
-from exp.ae_anomaly import load_descriptions, run_ablation, run_ae_anomaly
+from exp.ae_anomaly import load_descriptions, run_ae_anomaly
 from exp.ae_report import (
     plot_error_histogram,
     plot_examples,
     plot_overview,
     plot_sessions,
     plot_traces,
-    write_markdown,
+    write_metrics_csv,
     write_session_csv,
+    write_unlabelled_runs_csv,
     write_window_csv,
 )
 from exp.step_accuracy import compute_window_accuracies, write_csv
@@ -41,6 +42,14 @@ from utils.io import group_sessions, load_csv, load_session
 
 # Defaults live on StepAEConfig so the two commands cannot drift apart.
 _D = StepAEConfig()
+
+
+def _save_figure(fig, out_path: Path | str) -> None:
+    """Write a figure as both PNG and PDF - raster to look at, vector to print."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path.with_suffix(".png"), dpi=150)
+    fig.savefig(out_path.with_suffix(".pdf"))
 
 
 def _sessions_in(path: Path) -> dict[str, list[Path]]:
@@ -87,7 +96,7 @@ def _run_step_count(csv_paths: list[Path], label: str, plot_path: Path | None) -
     if plot_path:
         plot_path.parent.mkdir(parents=True, exist_ok=True)
         _plot_step_count(rec, result, plot_path)
-        print(f"  plot saved to {plot_path}")
+        print(f"  plot saved to {Path(plot_path).with_suffix('.png')} (+ .pdf)")
 
 
 def _plot_step_count(rec, result, out_path: str, accuracy: float | None = None) -> None:
@@ -143,7 +152,7 @@ def _plot_step_count(rec, result, out_path: str, accuracy: float | None = None) 
     axes[-1].set_xlabel("time (s)")
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _save_figure(fig, out_path)
     plt.close(fig)
 
 
@@ -152,10 +161,15 @@ def _cmd_step_accuracy(args: argparse.Namespace) -> None:
     if not csv_paths:
         raise SystemExit(f"no files matching {args.glob!r} found in {args.data}")
 
-    results = compute_window_accuracies(csv_paths, min_gt_steps=args.min_gt_steps)
+    results = compute_window_accuracies(
+        csv_paths,
+        min_gt_steps=args.min_gt_steps,
+        min_gt_cadence_spm=args.min_gt_cadence,
+    )
     if not results:
         raise SystemExit(
-            f"no window had >= {args.min_gt_steps} ground-truth steps to score"
+            f"no window had >= {args.min_gt_steps} ground-truth steps at "
+            f">= {args.min_gt_cadence:g} steps/min to score"
         )
 
     out_path = Path(args.out)
@@ -164,7 +178,10 @@ def _cmd_step_accuracy(args: argparse.Namespace) -> None:
     import numpy as np
 
     arr = np.array([r.accuracy for r in results])
-    print(f"windows scored: {len(results)} (dropped gt < {args.min_gt_steps})")
+    print(
+        f"windows scored: {len(results)} of {len(csv_paths)} "
+        f"(dropped gt < {args.min_gt_steps} steps or < {args.min_gt_cadence:g} steps/min)"
+    )
     print(f"  mean accuracy: {arr.mean():.4f}")
     print(f"  std accuracy:  {arr.std():.4f}")
 
@@ -179,7 +196,7 @@ def _cmd_step_accuracy(args: argparse.Namespace) -> None:
             result = count_steps(rec)
             plot_path = plot_dir / f"{path.stem}.png"
             _plot_step_count(rec, result, plot_path, accuracy=scored_files[path.name])
-        print(f"  {len(scored_files)} plot(s) saved to {plot_dir}")
+        print(f"  {len(scored_files)} plot(s) saved to {plot_dir} (png + pdf)")
     print(f"  csv written to {out_path}")
 
 
@@ -255,41 +272,18 @@ def _cmd_ae_anomaly(args: argparse.Namespace) -> None:
               f"flagged {s.n_flagged:3d}/{s.n_labeled:3d} ({s.flag_rate:.2f})"
               + (f"  {s.description}" if s.description else ""))
 
-    ablation = None
-    if args.ablation:
-        print("ablation: re-running the pipeline variants (this takes a few minutes)")
-        import numpy as np
-
-        seeds = tuple(range(args.ablation_seeds))
-        ablation = run_ablation(Path(args.train), Path(args.test), config, descriptions,
-                                seeds=seeds)
-        for name, runs in ablation:
-            au = [r.auprc for r in runs]
-            f1 = [r.window_metrics.f1 for r in runs]
-            sess = [sum(s.correct for s in r.sessions) for r in runs]
-            spread = f" ± {np.std(au):.3f}" if len(runs) > 1 else ""
-            print(f"  {name:44s} windows {int(runs[0].y_true.size):4d}  "
-                  f"AUPRC {np.mean(au):.3f}{spread}  F1 {np.mean(f1):.3f}  "
-                  f"sessions {np.mean(sess):.1f}/{len(runs[0].sessions)}")
-
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    plots = {
-        "Overview: training, score separation, ROC and precision-recall": "overview.png",
-        "Reconstruction error by anomaly type": "error_by_type.png",
-        "Per-session outcome": "sessions.png",
-        "Anomaly score over time, per session": "traces.png",
-        "Best and worst reconstructions": "examples.png",
-    }
-    plot_overview(result, out_dir / "overview.png")
-    plot_error_histogram(result, out_dir / "error_by_type.png")
-    plot_sessions(result, out_dir / "sessions.png")
-    plot_traces(result, out_dir / "traces.png")
-    plot_examples(result, out_dir / "examples.png")
+    plot_overview(result, out_dir / "overview")
+    plot_error_histogram(result, out_dir / "error_by_type")
+    plot_sessions(result, out_dir / "sessions")
+    plot_traces(result, out_dir / "traces")
+    plot_examples(result, out_dir / "examples")
     write_session_csv(result, out_dir / "sessions.csv")
     write_window_csv(result, out_dir / "windows.csv")
-    write_markdown(result, out_dir / "REPORT.md", plots, ablation)
-    print(f"report, plots and CSVs written to {out_dir}/")
+    write_metrics_csv(result, out_dir / "metrics.csv")
+    write_unlabelled_runs_csv(result, out_dir / "unlabelled_runs.csv")
+    print(f"plots (png + pdf) and CSVs written to {out_dir}/")
 
 
 def _cmd_step_ae(args: argparse.Namespace) -> None:
@@ -379,7 +373,7 @@ def _cmd_step_ae(args: argparse.Namespace) -> None:
         plot_path = Path(args.plot_dir) / "step_ae.png"
         plot_path.parent.mkdir(parents=True, exist_ok=True)
         _plot_step_ae(result, plot_path)
-        print(f"  plot saved to {plot_path}")
+        print(f"  plot saved to {Path(plot_path).with_suffix('.png')} (+ .pdf)")
 
 
 def _sharpness_gain(windows) -> float:
@@ -476,7 +470,7 @@ def _plot_step_ae(result, out_path: Path) -> None:
     axes[4].legend(loc="upper right")
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    _save_figure(fig, out_path)
 
 
 # Every ae-anomaly flag whose default is meant to be the StepAEConfig field of
@@ -515,6 +509,7 @@ def main() -> None:
     acc_parser.add_argument("data", type=Path, help="Directory of rec_*.csv segment files")
     acc_parser.add_argument("--glob", type=str, default="*_ann0.csv", help="Filename pattern to select windows (default *_ann0.csv)")
     acc_parser.add_argument("--min-gt-steps", type=int, default=5, help="Drop windows with fewer ground-truth steps than this (default 5)")
+    acc_parser.add_argument("--min-gt-cadence", type=float, default=20.0, help="Drop windows whose ground-truth cadence is below this, in steps/min - they are distance-sensor failures rather than slow walking (default 20)")
     acc_parser.add_argument("--out", type=str, default="out/step_accuracy.csv", help="Output CSV path (default out/step_accuracy.csv)")
     acc_parser.add_argument("--plot-dir", type=str, default=None, help="Save a diagnostic plot per scored window into this directory")
     acc_parser.set_defaults(func=_cmd_step_accuracy)
@@ -548,8 +543,6 @@ def main() -> None:
     an_parser.add_argument("--patience", type=int, default=60, help="Early-stopping patience in epochs (default 60)")
     an_parser.add_argument("--seed", type=int, default=0, help="Random seed (default 0)")
     an_parser.add_argument("--threshold-pct", type=float, default=_D.threshold_pct, help="Percentile of held-out normal error used as the threshold, i.e. the false-alarm budget: p95 accepts a 5%% false-alarm rate on normal gait (default 95)")
-    an_parser.add_argument("--ablation", action="store_true", help="Also re-run the pipeline variants (step vs sliding anchors, MLP vs conv, each alignment policy, with and without the distance channel) and add the comparison to the report")
-    an_parser.add_argument("--ablation-seeds", type=int, default=1, help="Run each ablation variant this many times with different seeds and report mean +/- spread; several variants differ by less than that spread (default 1)")
     an_parser.set_defaults(func=_cmd_ae_anomaly)
 
     ae_parser = sub.add_parser("step-ae", help="Train an autoencoder over aligned step windows and score reconstruction error")

@@ -34,13 +34,30 @@ __all__ = [
     "count_steps",
 ]
 
-_STEP_MIN_INTERVAL_S = 0.4  # cap cadence at 150 steps/min
+# Refractory period between strikes. Ground-truth step intervals on these
+# recordings have a median of 1.97 s and a 1st percentile of 0.98 s, so cane
+# cadence tops out near 60 steps/min - nothing like the 150 steps/min the
+# previous 0.4 s gate allowed. That slack was the detector's main error
+# source: one strike rings for a few hundred milliseconds, and every rebound
+# past the height threshold was counted as another step. Widening the gate
+# costs the fastest ~2% of real steps and removes far more double-counts than
+# it merges.
+_STEP_MIN_INTERVAL_S = 1.15  # cap cadence at ~52 steps/min
 # Detection height = mean + k * std of |acc|-1g over the whole recording.
 # Calibrated against ground-truth (dist_mm) step counts on real recordings.
-_STEP_HEIGHT_SIGMA_K = 4.3
+_STEP_HEIGHT_SIGMA_K = 3.2
+# A strike also has to stand clear of its own surroundings by this fraction of
+# the detection height. Height alone accepts a rebound that never falls back to
+# the noise floor; prominence is what distinguishes one shock from its ringing.
+_STEP_PROMINENCE_FRAC = 0.5
 # Absolute floor, in g. A near-motionless recording has near-zero noise, so
-# std alone could let residual sensor noise get picked up as "steps".
-_MIN_HEIGHT_G = 0.02
+# std alone could let residual sensor noise get picked up as "steps". Real
+# strikes in this dataset peak at 0.59-1.31 g of deviation, while a motionless
+# recording peaks around 0.03 g, so a floor in between rejects the second
+# without ever binding on the first (it binds on 0 of the 45 scoreable
+# windows). The previous 0.02 g floor was low enough to report "steps" in a
+# recording with no motion at all.
+_MIN_HEIGHT_G = 0.30
 
 # Band thresholds for the distance sensor live in utils.io, because the
 # windowing preprocessor needs the same error floor; re-exported here so
@@ -71,10 +88,10 @@ def _detect_gt_steps(rec: ImuRecording) -> tuple[np.ndarray, np.ndarray, np.ndar
     """Detect steps from the distance sensor.
 
     The reading quantizes into three bands rather than behaving like a
-    clean waveform: 110-120 mm is resting noise (cane planted), a rise past
-    125 mm means the cane tip has actually moved away from the ground (a
-    step), and anything below 110 mm is a sensor measurement error. So a
-    step is each *rising* crossing of the 125 mm threshold, latched with
+    clean waveform: 90-110 mm is resting noise (cane planted), a rise past
+    118 mm means the cane tip has actually moved away from the ground (a
+    step), and anything below 90 mm is a sensor measurement error. So a
+    step is each *rising* crossing of the 118 mm threshold, latched with
     hysteresis - it can't fire again until the reading has come back down
     and *stayed* in the resting band for a stretch (not just touched it,
     which is often mid-swing sensor jitter rather than the cane landing) -
@@ -113,7 +130,12 @@ def count_steps(rec: ImuRecording) -> StepCountResult:
     min_distance = max(1, int(_STEP_MIN_INTERVAL_S * rec.fs))
     height = max(np.mean(dev) + _STEP_HEIGHT_SIGMA_K * np.std(dev), _MIN_HEIGHT_G)
 
-    peaks, _ = find_peaks(dev, height=height, distance=min_distance)
+    peaks, _ = find_peaks(
+        dev,
+        height=height,
+        distance=min_distance,
+        prominence=_STEP_PROMINENCE_FRAC * height,
+    )
 
     step_times = rec.t[peaks]
     step_intervals = np.diff(step_times)

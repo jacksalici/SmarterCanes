@@ -22,10 +22,14 @@ The first is windowing. Anchoring a window on each detected step makes the
 amount of evidence gathered from a recording depend on a step detector, and
 every step detector available here degrades on abnormal gait - a shuffled or
 dragged step produces neither a clean acceleration shock nor a tip lift past
-the `dist_mm` threshold. Step anchoring yields one window each from rec_00018
-and rec_00027 against 121 from the normal rec_00017, so the recordings that
-matter most are the ones least measured. Sliding windows on a fixed time grid
-(`anchor="slide"`) give every recording the same coverage per second.
+the `dist_mm` threshold. How badly that bites depends on how the detector is
+tuned, which is the deeper objection: the size of the test set becomes a
+function of a threshold nobody set with evaluation in mind. On the current
+tuning, step anchoring yields 4-16 windows from each abnormal recording
+against 109 from the normal rec_00017, and 196 labelled windows in total
+against 290 for sliding anchors. Sliding windows on a fixed time grid
+(`anchor="slide"`) give every recording the same coverage per second, whatever
+the gait looks like and however the detector is tuned.
 
 The second is the alignment stage. Cross-correlating each window against the
 *normal* template and keeping the best-matching shift lets an abnormal window
@@ -336,69 +340,6 @@ def split_train_val(
         )
 
     return split.astype(str), notes
-
-
-# The pipeline variants the ablation walks: a cumulative path from the original
-# pipeline to the current default, each row adding exactly one change to the row
-# above. Every field any variant varies is pinned in every variant, so the
-# comparison cannot quietly inherit whatever the caller configured - running the
-# ablation with --no-dist would otherwise strip the distance channel from the
-# very row that exists to measure it.
-_ORIGINAL = dict(
-    anchor="step", align_mode="xcorr", model="mlp", latent=8,
-    with_dist=False, score_agg="mean",
-)
-ABLATION_VARIANTS: tuple[tuple[str, dict], ...] = (
-    ("the original pipeline", dict(_ORIGINAL)),
-    ("+ sliding anchors", {**_ORIGINAL, "anchor": "slide"}),
-    ("+ conv model (latent 16)",
-     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16}),
-    ("+ no alignment",
-     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "none"}),
-    ("+ step alignment",
-     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "step"}),
-    ("+ mixed alignment",
-     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "mixed"}),
-    ("+ distance channel",
-     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "mixed",
-      "with_dist": True}),
-    ("+ per-channel scoring (the default)",
-     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "mixed",
-      "with_dist": True, "score_agg": "chan_norm"}),
-)
-
-
-def run_ablation(
-    train_dir: Path,
-    test_dir: Path,
-    config: StepAEConfig,
-    descriptions: dict[str, str] | None = None,
-    variants: tuple[tuple[str, dict], ...] = ABLATION_VARIANTS,
-    seeds: tuple[int, ...] = (0,),
-) -> list[tuple[str, list[AEAnomalyResult]]]:
-    """Re-run the evaluation across pipeline variants, holding everything else fixed.
-
-    Worth the extra minutes because the two headline changes - sliding anchors
-    and dropping alignment - are justified by an argument about how the
-    pipeline can fail, and an argument like that should be checked rather than
-    asserted. Note that the variants are compared on the same test set the
-    headline numbers come from, so this is a sensitivity check, not an
-    independent model selection.
-
-    Pass several `seeds` when variants come out close: the gaps between the
-    better ones here are a few thousandths of AUPRC, which is the same order as
-    the spread across random initializations, and a single run cannot tell
-    those apart.
-    """
-    results = []
-    for name, overrides in variants:
-        runs = [
-            run_ae_anomaly(train_dir, test_dir, replace(config, **overrides, seed=seed),
-                           descriptions)
-            for seed in seeds
-        ]
-        results.append((name, runs))
-    return results
 
 
 def run_ae_anomaly(
