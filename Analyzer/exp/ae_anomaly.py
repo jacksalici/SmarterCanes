@@ -43,7 +43,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from exp.step_ae import StepAEConfig, _train, build_model
+from exp.step_ae import StepAEConfig, _train, build_model, resolve_with_dist
 from exp.step_count import count_steps
 from utils.io import group_sessions, load_session
 from utils.metrics import (
@@ -338,27 +338,33 @@ def split_train_val(
     return split.astype(str), notes
 
 
-# The pipeline variants the ablation walks, in the order they were arrived at.
-# Each row changes one thing from the row above it. Every field a variant
-# varies is set explicitly in every variant, so the comparison does not quietly
-# inherit whatever the caller happened to configure - running the ablation with
-# --with-dist would otherwise hand the distance channel to all seven rows and
-# flatten the very comparison the last row exists to make.
+# The pipeline variants the ablation walks: a cumulative path from the original
+# pipeline to the current default, each row adding exactly one change to the row
+# above. Every field any variant varies is pinned in every variant, so the
+# comparison cannot quietly inherit whatever the caller configured - running the
+# ablation with --no-dist would otherwise strip the distance channel from the
+# very row that exists to measure it.
+_ORIGINAL = dict(
+    anchor="step", align_mode="xcorr", model="mlp", latent=8,
+    with_dist=False, score_agg="mean",
+)
 ABLATION_VARIANTS: tuple[tuple[str, dict], ...] = (
-    ("step anchor + xcorr align + MLP (original)",
-     dict(anchor="step", align_mode="xcorr", model="mlp", with_dist=False)),
-    ("slide anchor + xcorr align + MLP",
-     dict(anchor="slide", align_mode="xcorr", model="mlp", with_dist=False)),
-    ("slide anchor + xcorr align + conv",
-     dict(anchor="slide", align_mode="xcorr", model="conv", with_dist=False)),
-    ("slide anchor + no align + conv",
-     dict(anchor="slide", align_mode="none", model="conv", with_dist=False)),
-    ("slide anchor + step align + conv",
-     dict(anchor="slide", align_mode="step", model="conv", with_dist=False)),
-    ("slide anchor + mixed align + conv",
-     dict(anchor="slide", align_mode="mixed", model="conv", with_dist=False)),
-    ("slide anchor + mixed align + conv + dist",
-     dict(anchor="slide", align_mode="mixed", model="conv", with_dist=True)),
+    ("the original pipeline", dict(_ORIGINAL)),
+    ("+ sliding anchors", {**_ORIGINAL, "anchor": "slide"}),
+    ("+ conv model (latent 16)",
+     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16}),
+    ("+ no alignment",
+     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "none"}),
+    ("+ step alignment",
+     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "step"}),
+    ("+ mixed alignment",
+     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "mixed"}),
+    ("+ distance channel",
+     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "mixed",
+      "with_dist": True}),
+    ("+ per-channel scoring (the default)",
+     {**_ORIGINAL, "anchor": "slide", "model": "conv", "latent": 16, "align_mode": "mixed",
+      "with_dist": True, "score_agg": "chan_norm"}),
 )
 
 
@@ -405,6 +411,13 @@ def run_ae_anomaly(
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
     descriptions = descriptions or {}
+
+    # Resolved across both splits at once: train and test must end up with the
+    # same channels, so the distance channel is only usable if every recording
+    # on both sides carries it.
+    config, dist_notes = resolve_with_dist(
+        config, sorted(train_dir.glob("*.csv")) + sorted(test_dir.glob("*.csv"))
+    )
 
     # --- fit: preprocessing and model, on normal training data only ---
     train_series = load_series(train_dir, config)
@@ -499,5 +512,5 @@ def run_ae_anomaly(
         channel_error=channel_error,
         threshold=threshold,
         sessions=sessions,
-        notes=notes,
+        notes=dist_notes + notes,
     )

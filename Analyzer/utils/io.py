@@ -167,6 +167,19 @@ def load_csv(path: str | Path) -> ImuRecording:
     )
 
 
+def has_dist_column(path: str | Path) -> bool:
+    """Whether a recording carries `dist_mm`, read from the header alone.
+
+    Only the first line is parsed, so this is cheap enough to run over a whole
+    directory before deciding whether the distance channel is available - which
+    is what lets `--with-dist` default to "use it when every recording has it"
+    rather than failing on the older firmware revisions that predate the sensor.
+    """
+    with open(path, newline="", encoding="utf-8", errors="replace") as f:
+        header = next(csv.reader(f))
+    return _DIST_COLUMN in {name.strip() for name in header}
+
+
 def group_sessions(paths: list[Path]) -> dict[str, list[Path]]:
     """Group recording files by session, in segment order.
 

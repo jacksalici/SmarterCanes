@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from exp.ae_anomaly import LABEL_ANOMALY, LABEL_DROP, AEAnomalyResult
+from exp.ae_anomaly import LABEL_ANOMALY, LABEL_DROP, LABEL_NORMAL, AEAnomalyResult
 from utils.io import DIST_ERROR_FLOOR_MM
 from utils.metrics import pr_curve, roc_curve, threshold_metrics
 
@@ -367,6 +367,128 @@ def plot_traces(result: AEAnomalyResult, out_path: Path) -> None:
         fontsize=11,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def group_scores_by_type(
+    result: AEAnomalyResult,
+) -> tuple[np.ndarray, list[tuple[str, np.ndarray, int]]]:
+    """Split the scoreable test windows into normal, then one group per anomaly type.
+
+    Grouping is by the description text from `description.csv` rather than by
+    recording, because the interesting question is what *kind* of abnormal gait
+    the score separates - four sessions of "tremors and short steps" behave as
+    one population, and pooling them says more than four small histograms.
+
+    Returns (normal_scores, [(anomaly type, scores, n_sessions), ...]) with the
+    types in recording order, which is also the order they appear in
+    `description.csv`.
+    """
+    w = result.test_windows
+    scoreable = result.labels != LABEL_DROP
+    normal = result.scores[scoreable & (result.labels == LABEL_NORMAL)]
+
+    groups: dict[str, list[np.ndarray]] = {}
+    sessions: dict[str, int] = {}
+    order: list[str] = []
+    for sess in sorted(result.sessions, key=lambda s: s.session_id):
+        if sess.label != LABEL_ANOMALY:
+            continue
+        name = sess.description or "unspecified"
+        if name not in groups:
+            groups[name] = []
+            sessions[name] = 0
+            order.append(name)
+        mask = (w.session_ids == sess.session_id) & scoreable
+        groups[name].append(result.scores[mask])
+        sessions[name] += 1
+
+    return normal, [(name, np.concatenate(groups[name]), sessions[name]) for name in order]
+
+
+def plot_error_histogram(result: AEAnomalyResult, out_path: Path) -> None:
+    """Reconstruction error by anomaly type: normal in blue, each type a shade of red.
+
+    Stacked rather than overlaid, so the bars add up to the real count per bin
+    instead of hiding each other, and on a log x-axis because the anomalous
+    tail runs orders of magnitude past the normal bulk. The strip plot beneath
+    carries what a histogram cannot: how much of each *type* sits on the wrong
+    side of the threshold, when a type contributes only a dozen windows.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    normal, groups = group_scores_by_type(result)
+    # Darkening reds, in the order the types appear in description.csv, so the
+    # legend reads as one ordered scale rather than an arbitrary palette.
+    shades = plt.get_cmap("Reds")(np.linspace(0.38, 0.92, max(len(groups), 1)))
+
+    all_scores = np.concatenate([normal] + [g for _, g, _ in groups])
+    bins = np.geomspace(max(all_scores.min(), 1e-6), all_scores.max(), 46)
+
+    fig, axes = plt.subplots(
+        2, 1, figsize=(12, 9), gridspec_kw={"height_ratios": [2.1, 1]}, sharex=True
+    )
+
+    labels = [f"Normal gait  (n={normal.size}, 1 rec)"] + [
+        f"{name}  (n={g.size}, {n} rec)" for name, g, n in groups
+    ]
+    axes[0].hist(
+        [normal] + [g for _, g, _ in groups],
+        bins=bins,
+        stacked=True,
+        color=[_NORMAL_COLOR, *shades],
+        label=labels,
+        edgecolor="white",
+        linewidth=0.3,
+    )
+    axes[0].axvline(result.threshold, color="black", linestyle="--", linewidth=1.2)
+    axes[0].annotate(
+        f"threshold {result.threshold:.3f}\n"
+        f"(p{result.config.threshold_pct:g} of held-out normal)",
+        xy=(result.threshold, axes[0].get_ylim()[1] * 0.96),
+        xytext=(6, 0), textcoords="offset points",
+        ha="left", va="top", fontsize=8,
+    )
+    axes[0].set_xscale("log")
+    axes[0].set_ylabel("windows")
+    axes[0].set_title(
+        "Reconstruction error by anomaly type "
+        f"({len(result.test_windows.channels)} channels, "
+        f"align={result.config.align_mode})"
+    )
+    axes[0].legend(fontsize=8, loc="upper right", framealpha=0.95)
+
+    # Per-type strip: every window as a point, with the median marked.
+    rng = np.random.default_rng(0)
+    rows = [("Normal gait", normal, _NORMAL_COLOR)] + [
+        (name, g, shades[i]) for i, (name, g, _) in enumerate(groups)
+    ]
+    for y, (name, scores, color) in enumerate(rows):
+        jitter = rng.uniform(-0.28, 0.28, scores.size)
+        flagged = scores > result.threshold
+        axes[1].scatter(scores, np.full(scores.size, y) + jitter, s=11, color=color,
+                        alpha=0.75, linewidths=0)
+        axes[1].scatter(np.median(scores), y, marker="|", s=420, color="black",
+                        linewidths=1.6, zorder=3)
+        axes[1].text(
+            all_scores.max() * 1.15, y,
+            f"{int(flagged.sum())}/{scores.size} flagged",
+            va="center", fontsize=8, color="black",
+        )
+    axes[1].axvline(result.threshold, color="black", linestyle="--", linewidth=1.2)
+    axes[1].set_yticks(range(len(rows)))
+    axes[1].set_yticklabels([name for name, _, _ in rows], fontsize=8)
+    axes[1].set_ylim(-0.7, len(rows) - 0.3)
+    axes[1].set_xlim(right=all_scores.max() * 2.6)
+    axes[1].invert_yaxis()
+    axes[1].set_xlabel("mean squared reconstruction error (log scale)")
+    axes[1].set_title("Every scoreable window, by type (black tick = median)", fontsize=10)
+
+    fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
 

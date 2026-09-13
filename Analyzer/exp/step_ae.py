@@ -24,7 +24,7 @@ gap in the loss curves is the thing to watch before trusting a score.
 from __future__ import annotations
 
 import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +32,7 @@ import torch
 from torch import nn
 
 from exp.step_count import count_steps
-from utils.io import ImuRecording
+from utils.io import ImuRecording, has_dist_column
 from utils.windows import NormStats, WindowSet, build_window_set, to_uniform
 
 # Measured over data/: the median interval between detected steps is ~1.92 s,
@@ -65,19 +65,21 @@ class StepAEConfig:
     target_fs: float = DEFAULT_TARGET_FS
     max_lag_s: float = DEFAULT_MAX_LAG_S
     align_iters: int = 3
-    with_dist: bool = False
-    anchor: str = "step"  # "step" or "slide"
+    # True means "use the distance channel where every recording has it";
+    # `resolve_with_dist` turns it off for data that predates the sensor.
+    with_dist: bool = True
+    anchor: str = "slide"  # "step" or "slide"
     hop_s: float = DEFAULT_HOP_S  # sliding-window spacing, for anchor="slide"
-    align_mode: str = "xcorr"  # "none" | "xcorr" | "step" | "mixed"
+    align_mode: str = "mixed"  # "none" | "xcorr" | "step" | "mixed"
     # Which windows count as normal training data
     normal_by: str = "event"  # "event" or "ann"
     normal_ann: tuple[int, ...] = (0,)  # annotations that are normal end to end
     # Model / training
-    model: str = "mlp"  # "mlp" or "conv"
+    model: str = "conv"  # "mlp" or "conv"
     hidden: tuple[int, ...] = (128, 32)  # MLP encoder widths
     conv_channels: tuple[int, ...] = (16, 32, 32)  # conv encoder widths
     kernel_size: int = 7
-    latent: int = 8
+    latent: int = 16
     epochs: int = 400
     batch_size: int = 32
     lr: float = 1e-3
@@ -85,9 +87,9 @@ class StepAEConfig:
     val_frac: float = 0.2
     patience: int = 60
     seed: int = 0
-    threshold_pct: float = 99.0
+    threshold_pct: float = 95.0
     # How per-sample squared error is collapsed into one score per window.
-    score_agg: str = "mean"  # "mean" | "chan_norm" | "peak"
+    score_agg: str = "chan_norm"  # "mean" | "chan_norm" | "peak"
 
 
 @dataclass
@@ -240,6 +242,26 @@ def build_model(config: StepAEConfig, n_channels: int, window_len: int) -> nn.Mo
             n_channels, window_len, tuple(config.conv_channels), config.latent, config.kernel_size
         )
     raise ValueError(f"unknown model: {config.model!r}")
+
+
+def resolve_with_dist(config: StepAEConfig, paths: list[Path]) -> tuple[StepAEConfig, list[str]]:
+    """Turn `with_dist` off when the data cannot supply it.
+
+    The distance channel is on by default because it measurably helps, but
+    `dist_mm` was added by a later firmware revision, so older recordings
+    simply do not have it. Rather than failing, the request is downgraded and
+    the reason reported - and the *resolved* value is what gets stored in a
+    checkpoint, so a reloaded model never disagrees with its own input width.
+    """
+    if not config.with_dist:
+        return config, []
+    missing = [p.name for p in paths if not has_dist_column(p)]
+    if not missing:
+        return config, []
+    shown = ", ".join(missing[:3]) + (f" and {len(missing) - 3} more" if len(missing) > 3 else "")
+    return replace(config, with_dist=False), [
+        f"distance channel disabled: {len(missing)} recording(s) have no dist_mm column ({shown})"
+    ]
 
 
 def _window_has_event(series, center: int, window_len: int) -> bool:
@@ -458,6 +480,15 @@ def run_step_ae(
     """
     torch.manual_seed(config.seed)
 
+    dist_notes: list[str] = []
+    if config.with_dist and not all(rec.has_dist for _, rec in recs):
+        missing = [sid for sid, rec in recs if not rec.has_dist]
+        shown = ", ".join(missing[:3]) + (f" and {len(missing) - 3} more" if len(missing) > 3 else "")
+        config = replace(config, with_dist=False)
+        dist_notes.append(
+            f"distance channel disabled: {len(missing)} recording(s) have no dist_mm ({shown})"
+        )
+
     checkpoint = None
     template = norm = None
     if load_path is not None:
@@ -485,13 +516,21 @@ def run_step_ae(
 
     scores, channel_error, recon = _score(model, windows.x)
 
-    # Calibrate on held-out normal windows if there are any - the error on
-    # windows the model was fitted to is optimistically low.
-    calib_mask = split == "val"
-    if not calib_mask.any():
-        calib_mask = split == "train"
-        notes.append("no validation windows: threshold calibrated on training windows")
-    threshold = float(np.percentile(scores[calib_mask], config.threshold_pct))
+    if checkpoint is not None and "threshold" in checkpoint:
+        # A loaded model keeps the threshold it was calibrated with. Re-deriving
+        # it from the recordings being scored would calibrate on data that may
+        # well contain the anomalies - the whole point of the checkpoint is that
+        # the operating point was fixed on known-normal windows beforehand.
+        threshold = float(checkpoint["threshold"])
+        notes.append(f"threshold {threshold:.4f} taken from the checkpoint, not recalibrated")
+    else:
+        # Calibrate on held-out normal windows if there are any - the error on
+        # windows the model was fitted to is optimistically low.
+        calib_mask = split == "val"
+        if not calib_mask.any():
+            calib_mask = split == "train"
+            notes.append("no validation windows: threshold calibrated on training windows")
+        threshold = float(np.percentile(scores[calib_mask], config.threshold_pct))
 
     if save_path is not None and checkpoint is None:
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -524,7 +563,7 @@ def run_step_ae(
         threshold=threshold,
         config=config,
         trained=checkpoint is None,
-        notes=notes,
+        notes=dist_notes + notes,
     )
 
 

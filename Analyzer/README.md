@@ -45,19 +45,24 @@ Four preprocessing stages (`utils/windows.py`), then the model (`exp/step_ae.py`
    dimension small). Step and event indices are mapped by nearest sample; event markers are impulses,
    so interpolating them would smear or erase them.
 
-2. **Window.** One window per detected step, taken from `count_steps`, centered on that step, of
-   `--window-s` seconds (default 6.0 ≈ three steps: the median interval between detected steps in
-   `data/` is 1.92 s, cane-assisted gait here being slow and deliberate — a plain walking cadence would
-   put three steps nearer 3 s). `--step-hop` anchors on every Nth step instead. A window is kept only if
-   it fits inside its recording with `--max-lag-s` of slack on both sides, so the alignment stage can
-   shift it by any lag in range and still re-slice real samples — never zero padding, and never a window
-   whose length depends on how far it moved.
+2. **Window.** Windows of `--window-s` seconds (default 6.0 ≈ three steps: the median interval between
+   detected steps in `data/` is 1.92 s, cane-assisted gait here being slow and deliberate — a plain
+   walking cadence would put three steps nearer 3 s), cut every `--hop-s` seconds under the default
+   `--anchor slide`. `--anchor step` instead centres one window on each detected step (with
+   `--step-hop` to take every Nth); it phase-locks windows for free but ties how much evidence a
+   recording yields to a step detector that fails on abnormal gait, which is why it is no longer the
+   default — see **ae-anomaly** below. A window is kept only if it fits inside its recording with
+   `--max-lag-s` of slack on both sides, so the alignment stage can shift it by any lag in range and
+   still re-slice real samples — never zero padding, and never a window whose length depends on how far
+   it moved.
 
-3. **Align.** Step anchoring gets windows roughly phase-locked; the residual jitter is removed by
-   normalized cross-correlation against a common template, so the same point of the gait cycle lands at
-   the same index in every window and the model doesn't spend capacity modelling phase as if it were
-   signal. The alignment signal is mean-removed `|acc|` — orientation-independent, since the cane is not
-   held at a repeatable angle, and where the tip strike is sharpest. The template is refined iteratively
+3. **Align.** Each window is placed into a common phase by one of four policies (`--align-mode`, see
+   the table under **ae-anomaly**); the default `mixed` centres the nearest detected step and falls
+   back to cross-correlation only where no step was found. The point is that the same part of the gait
+   cycle lands at the same index in every window, so the model doesn't spend capacity modelling phase
+   as if it were signal. The alignment signal is mean-removed `|acc|` — orientation-independent, since
+   the cane is not held at a repeatable angle, and where the tip strike is sharpest. For `xcorr` the
+   template is refined iteratively
    (`--align-iters`, default 3): start from the mean alignment signal at the raw anchors, re-estimate
    every lag against it, rebuild the template from the shifted windows, repeat until the mean lag change
    is under one sample. That iteration is what breaks the chicken-and-egg between "where is the pattern"
@@ -70,32 +75,41 @@ Four preprocessing stages (`utils/windows.py`), then the model (`exp/step_ae.py`
    there. The search is capped at `±--max-lag-s` (default 1.0 s, about half a step interval): wide enough
    to fix a mis-anchored window, narrow enough that a window can't align onto the *neighbouring* step and
    collapse the phase structure. The printed sharpness gain is the ratio of mean-signal energy after
-   alignment to before — averaging misaligned copies of one pattern cancels it out, so above 1 means the
-   windows now agree on where the pattern is (1.4× on the current `data/`).
+   alignment to before — averaging misaligned copies of one pattern cancels it out, so above 1 means
+   the windows now agree on where the pattern is. Read it against the anchoring: under `--anchor step`
+   the windows start nearly phase-locked, so the gain is modest (1.45× on `data/train`), while under
+   `--anchor slide` they start at arbitrary phase and the "before" mean almost cancels, so the ratio
+   runs into the tens. A large number there means the baseline was random, not that something is wrong.
 
 4. **Normalize.** Per-channel z-score, with statistics computed over the *training* windows only, and
    global rather than per-window: normalizing each window on its own would erase amplitude differences,
    which for anomaly detection are exactly the thing worth noticing.
 
-**Channels.** `ax, ay, az, gx, gy, gz, |acc|`. `dist_mm` is added as an eighth channel only under
-`--with-dist`: it is the ground-truth sensor for step detection, so including it by default would leak
-the signal the model should be independent of.
+**Channels.** `ax, ay, az, gx, gy, gz, |acc|`, plus `dist_mm` — the cane tip's height above the
+ground — as an eighth channel by default. It measurably helps (see **ae-anomaly**), and the old
+objection to it (that it is the step detector's ground truth) mostly dissolved once windows stopped
+being anchored on detected steps. `--no-dist` scores from the IMU alone. Because `dist_mm` was added by
+a later firmware revision, the channel is switched off automatically — with a printed note — for any
+input where some recording lacks the column, so older data still loads.
 
 **Model.** Either of two autoencoders, chosen with `--model`. The default `mlp` is a symmetric MLP
 autoencoder over the flattened `(channels × samples)` window — encoder
-widths from `--hidden` (default `128,32`) down to a `--latent` bottleneck (default 8), mirrored back,
+widths from `--hidden` (default `128,32`) down to a `--latent` bottleneck (default 16), mirrored back,
 ReLU between and a linear output (the target is z-scored, so squashing it would clip exactly the large
 excursions that carry the anomaly signal). Adam, MSE, early stopping on validation loss.
 
-`conv` is a 1-D convolutional autoencoder instead: strided convolutions down to the same bottleneck,
-mirrored by interpolation back up. It is far smaller for the same window, and shift-tolerant, which is
-what lets it work on unaligned windows (see **ae-anomaly** below).
+`conv` (the default) is a 1-D convolutional autoencoder instead: strided convolutions down to the same
+bottleneck, mirrored by interpolation back up. It is far smaller for the same window — about 34k
+parameters against 279k — and shift-tolerant, which is what lets it cope with whatever residual phase
+the alignment policy leaves behind.
 
 Trained on normal windows only, so a bottleneck far narrower than the input forces it to learn the few
 degrees of freedom ordinary gait actually has. Reconstruction error is then the anomaly score, and the
-decision threshold is a high percentile (`--threshold-pct`, default 99) of the error on *held-out
-normal* windows — calibrated on what normal looks like rather than on any assumption about anomalies,
-which matters because the labels are not settled yet.
+decision threshold is a high percentile (`--threshold-pct`, default 95) of the error on *held-out
+normal* windows — calibrated on what normal looks like rather than on any assumption about anomalies.
+A model loaded with `--load` keeps the threshold stored in its checkpoint rather than re-deriving one
+from the recordings being scored, which would calibrate the operating point on data that may contain
+the very anomalies it is meant to catch.
 
 The train/validation split is **by session**, not by window: consecutive windows overlap heavily, so a
 window-level split would put near-duplicates on both sides and make the validation loss meaningless.
@@ -146,13 +160,14 @@ uv run main.py step-count data --plot-dir out/
 # autoencoder: train on all recordings and score them
 uv run main.py step-ae data --plot-dir out/step_ae
 
-# a different window length, and windows anchored on every other step
-uv run main.py step-ae data --window-s 3.5 --step-hop 2 --plot-dir out/step_ae
+# a different window length, and windows anchored on every other detected step
+uv run main.py step-ae data --window-s 3.5 --anchor step --step-hop 2 --plot-dir out/step_ae
 
 # use the filename annotation as the label source instead of the event marker
 uv run main.py step-ae data --normal-by ann
 
-# score with a saved model instead of training (reuses its template and statistics)
+# score with a saved model instead of training
+# (reuses its template, statistics and calibrated threshold)
 uv run main.py step-ae data --load out/step_ae/model.pt --plot-dir out/step_ae
 ```
 
@@ -224,11 +239,11 @@ mean ± spread rather than trusting a single run to rank them.
 
 ### The distance channel
 
-`--with-dist` adds `dist_mm` — the cane tip's height above the ground — as an eighth input channel. It
-is off by default because it is the sensor the step detector treats as ground truth, so feeding it to
-a model *anchored* on detected steps would be circular. Under sliding anchors that objection is much
-weaker: the step detector no longer decides which windows exist, so the reading is just another
-sensor.
+`dist_mm` — the cane tip's height above the ground — is the eighth input channel, **on by default**.
+It used to be opt-in because it is the sensor the step detector treats as ground truth, so feeding it
+to a model *anchored* on detected steps would be circular. Under sliding anchors that objection is much
+weaker: the step detector no longer decides which windows exist, so the reading is just another sensor.
+`--no-dist` turns it off, and it is disabled automatically for recordings that predate the sensor.
 
 It helps, consistently and by more than seed noise, under every alignment policy. Two caveats travel
 with it. Readings below the sensor error floor (`DIST_ERROR_FLOOR_MM`, 90 mm) are measurement failures
@@ -260,17 +275,17 @@ plots: `overview.png` (loss curves, score separation, ROC, precision-recall), `s
 session) and `examples.png` (best and worst reconstructions with per-channel error).
 
 ```bash
-# the headline run
+# the headline run - bare defaults are the best-measured configuration
 uv run main.py ae-anomaly
 
-# with the pipeline comparison (slower - it retrains four variants)
+# with the pipeline comparison (slower - it retrains eight variants)
 uv run main.py ae-anomaly --ablation
 
 # the original pipeline, for comparison
-uv run main.py ae-anomaly --anchor step --model mlp --align-mode xcorr
+uv run main.py ae-anomaly --anchor step --model mlp --align-mode xcorr --latent 8 --no-dist --score-agg mean
 
-# add the cane-tip distance sensor as an eighth channel
-uv run main.py ae-anomaly --with-dist
+# score from the IMU alone, without the cane-tip distance sensor
+uv run main.py ae-anomaly --no-dist
 
 # rank the variants against seed noise rather than a single run
 uv run main.py ae-anomaly --ablation --ablation-seeds 3

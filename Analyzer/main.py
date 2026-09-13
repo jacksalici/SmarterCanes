@@ -22,6 +22,7 @@ from exp.step_ae import (
 )
 from exp.ae_anomaly import load_descriptions, run_ablation, run_ae_anomaly
 from exp.ae_report import (
+    plot_error_histogram,
     plot_examples,
     plot_overview,
     plot_sessions,
@@ -37,6 +38,9 @@ from exp.step_count import (
     count_steps,
 )
 from utils.io import group_sessions, load_csv, load_session
+
+# Defaults live on StepAEConfig so the two commands cannot drift apart.
+_D = StepAEConfig()
 
 
 def _sessions_in(path: Path) -> dict[str, list[Path]]:
@@ -272,11 +276,13 @@ def _cmd_ae_anomaly(args: argparse.Namespace) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     plots = {
         "Overview: training, score separation, ROC and precision-recall": "overview.png",
+        "Reconstruction error by anomaly type": "error_by_type.png",
         "Per-session outcome": "sessions.png",
         "Anomaly score over time, per session": "traces.png",
         "Best and worst reconstructions": "examples.png",
     }
     plot_overview(result, out_dir / "overview.png")
+    plot_error_histogram(result, out_dir / "error_by_type.png")
     plot_sessions(result, out_dir / "sessions.png")
     plot_traces(result, out_dir / "traces.png")
     plot_examples(result, out_dir / "examples.png")
@@ -296,6 +302,11 @@ def _cmd_step_ae(args: argparse.Namespace) -> None:
         max_lag_s=args.max_lag_s,
         align_iters=args.align_iters,
         align_mode=args.align_mode,
+        anchor=args.anchor,
+        hop_s=args.hop_s,
+        model=args.model,
+        conv_channels=tuple(int(v) for v in args.conv_channels.split(",")),
+        kernel_size=args.kernel_size,
         with_dist=args.with_dist,
         normal_by=args.normal_by,
         normal_ann=tuple(int(v) for v in args.normal_ann.split(",")),
@@ -468,6 +479,28 @@ def _plot_step_ae(result, out_path: Path) -> None:
     fig.savefig(out_path, dpi=150)
 
 
+# Every ae-anomaly flag whose default is meant to be the StepAEConfig field of
+# the same name. Checked rather than trusted: a hardcoded argparse default that
+# silently overrides the dataclass is invisible in a diff and shows up only as
+# results that do not match the configuration they claim to use.
+_SHARED_DEFAULTS = (
+    "window_s", "target_fs", "max_lag_s", "align_iters", "anchor", "hop_s",
+    "align_mode", "model", "kernel_size", "latent", "epochs", "batch_size",
+    "lr", "weight_decay", "val_frac", "patience", "seed", "threshold_pct",
+    "score_agg", "with_dist",
+)
+
+
+def _assert_cli_defaults_match_config(parser: argparse.ArgumentParser) -> None:
+    drift = [
+        f"--{name.replace('_', '-')}: CLI {parser.get_default(name)!r} != config {getattr(_D, name)!r}"
+        for name in _SHARED_DEFAULTS
+        if parser.get_default(name) != getattr(_D, name)
+    ]
+    if drift:
+        raise SystemExit("CLI defaults have drifted from StepAEConfig:\n  " + "\n  ".join(drift))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="SmartCane IMU analyzer")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -491,20 +524,22 @@ def main() -> None:
     an_parser.add_argument("--test", type=str, default="data/test", help="Directory of labelled test recordings (default data/test)")
     an_parser.add_argument("--descriptions", type=str, default="description.csv", help="Semicolon-separated anomaly descriptions, for the report (default description.csv)")
     an_parser.add_argument("--out-dir", type=str, default="out/ae_anomaly", help="Where to write the report, plots and CSVs (default out/ae_anomaly)")
-    an_parser.add_argument("--anchor", choices=["step", "slide"], default="slide", help="Windowing scheme: slide avoids depending on a step detector that fails on abnormal gait (default slide)")
+    an_parser.add_argument("--anchor", choices=["step", "slide"], default=_D.anchor, help="Windowing scheme: slide avoids depending on a step detector that fails on abnormal gait (default slide)")
     an_parser.add_argument("--hop-s", type=float, default=DEFAULT_HOP_S, help=f"Sliding-window spacing in seconds (default {DEFAULT_HOP_S:g})")
-    an_parser.add_argument("--align-mode", choices=["none", "xcorr", "step", "mixed"], default="mixed", help="Phase policy: none leaves windows at their anchor; xcorr correlates against the normal template; step centers the nearest detected step; mixed uses step where one was detected and xcorr only as a fallback (default mixed)")
-    an_parser.add_argument("--model", choices=["mlp", "conv"], default="conv", help="Autoencoder architecture (default conv)")
-    an_parser.add_argument("--score-agg", choices=["mean", "chan_norm", "peak"], default="mean", help="How per-sample error becomes one score per window (default mean)")
+    an_parser.add_argument("--align-mode", choices=["none", "xcorr", "step", "mixed"], default=_D.align_mode, help="Phase policy: none leaves windows at their anchor; xcorr correlates against the normal template; step centers the nearest detected step; mixed uses step where one was detected and xcorr only as a fallback (default mixed)")
+    an_parser.add_argument("--model", choices=["mlp", "conv"], default=_D.model, help="Autoencoder architecture (default conv)")
+    an_parser.add_argument("--score-agg", choices=["mean", "chan_norm", "peak"], default=_D.score_agg, help=f"How per-sample error becomes one score per window (default {_D.score_agg}; chan_norm puts every channel in units of how unusual it is for that channel, which matters once dist_mm is in the mix)")
     an_parser.add_argument("--window-s", type=float, default=DEFAULT_WINDOW_S, help=f"Window length in seconds (default {DEFAULT_WINDOW_S:g})")
     an_parser.add_argument("--target-fs", type=float, default=DEFAULT_TARGET_FS, help=f"Resampling rate in Hz (default {DEFAULT_TARGET_FS:g})")
     an_parser.add_argument("--max-lag-s", type=float, default=DEFAULT_MAX_LAG_S, help=f"Maximum alignment shift in seconds (default {DEFAULT_MAX_LAG_S:g})")
     an_parser.add_argument("--align-iters", type=int, default=3, help="Template refinement passes (default 3)")
-    an_parser.add_argument("--with-dist", action="store_true", help="Include dist_mm as an extra channel")
+    dist_group = an_parser.add_mutually_exclusive_group()
+    dist_group.add_argument("--with-dist", dest="with_dist", action="store_true", default=True, help="Include dist_mm (cane-tip height) as an extra channel. On by default; automatically disabled for recordings that predate the sensor")
+    dist_group.add_argument("--no-dist", dest="with_dist", action="store_false", help="Exclude dist_mm and score from the IMU alone")
     an_parser.add_argument("--hidden", type=str, default="128,32", help="Comma-separated MLP encoder widths (default 128,32)")
     an_parser.add_argument("--conv-channels", type=str, default="16,32,32", help="Comma-separated conv encoder widths (default 16,32,32)")
     an_parser.add_argument("--kernel-size", type=int, default=7, help="Conv kernel size (default 7)")
-    an_parser.add_argument("--latent", type=int, default=16, help="Bottleneck width (default 16)")
+    an_parser.add_argument("--latent", type=int, default=_D.latent, help=f"Bottleneck width (default {_D.latent})")
     an_parser.add_argument("--epochs", type=int, default=400, help="Maximum training epochs (default 400)")
     an_parser.add_argument("--batch-size", type=int, default=32, help="Minibatch size (default 32)")
     an_parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate (default 1e-3)")
@@ -512,7 +547,7 @@ def main() -> None:
     an_parser.add_argument("--val-frac", type=float, default=0.2, help="Fraction of each training session held out for validation and calibration (default 0.2)")
     an_parser.add_argument("--patience", type=int, default=60, help="Early-stopping patience in epochs (default 60)")
     an_parser.add_argument("--seed", type=int, default=0, help="Random seed (default 0)")
-    an_parser.add_argument("--threshold-pct", type=float, default=95.0, help="Percentile of held-out normal error used as the threshold, i.e. the false-alarm budget: p95 accepts a 5%% false-alarm rate on normal gait (default 95)")
+    an_parser.add_argument("--threshold-pct", type=float, default=_D.threshold_pct, help="Percentile of held-out normal error used as the threshold, i.e. the false-alarm budget: p95 accepts a 5%% false-alarm rate on normal gait (default 95)")
     an_parser.add_argument("--ablation", action="store_true", help="Also re-run the pipeline variants (step vs sliding anchors, MLP vs conv, each alignment policy, with and without the distance channel) and add the comparison to the report")
     an_parser.add_argument("--ablation-seeds", type=int, default=1, help="Run each ablation variant this many times with different seeds and report mean +/- spread; several variants differ by less than that spread (default 1)")
     an_parser.set_defaults(func=_cmd_ae_anomaly)
@@ -523,13 +558,20 @@ def main() -> None:
     ae_parser.add_argument("--step-hop", type=int, default=1, help="Anchor a window on every Nth detected step (default 1)")
     ae_parser.add_argument("--target-fs", type=float, default=DEFAULT_TARGET_FS, help=f"Resampling rate in Hz (default {DEFAULT_TARGET_FS:g})")
     ae_parser.add_argument("--max-lag-s", type=float, default=DEFAULT_MAX_LAG_S, help=f"Maximum alignment shift in seconds (default {DEFAULT_MAX_LAG_S:g})")
-    ae_parser.add_argument("--align-mode", choices=["none", "xcorr", "step", "mixed"], default="xcorr", help="Phase policy (default xcorr; see ae-anomaly for what the four mean)")
+    ae_parser.add_argument("--anchor", choices=["step", "slide"], default=_D.anchor, help=f"Windowing scheme (default {_D.anchor}; step ties how much evidence a recording yields to a step detector that fails on abnormal gait)")
+    ae_parser.add_argument("--hop-s", type=float, default=DEFAULT_HOP_S, help=f"Sliding-window spacing in seconds (default {DEFAULT_HOP_S:g})")
+    ae_parser.add_argument("--align-mode", choices=["none", "xcorr", "step", "mixed"], default=_D.align_mode, help=f"Phase policy (default {_D.align_mode}; step placement where a step was detected, correlation only as a fallback)")
+    ae_parser.add_argument("--model", choices=["mlp", "conv"], default=_D.model, help=f"Autoencoder architecture (default {_D.model})")
+    ae_parser.add_argument("--conv-channels", type=str, default="16,32,32", help="Comma-separated conv encoder widths (default 16,32,32)")
+    ae_parser.add_argument("--kernel-size", type=int, default=7, help="Conv kernel size (default 7)")
     ae_parser.add_argument("--align-iters", type=int, default=3, help="Template refinement passes, used only when fitting an xcorr template from scratch (default 3)")
-    ae_parser.add_argument("--with-dist", action="store_true", help="Include dist_mm as an extra channel (it is the step-detection ground truth, so off by default)")
+    ae_dist_group = ae_parser.add_mutually_exclusive_group()
+    ae_dist_group.add_argument("--with-dist", dest="with_dist", action="store_true", default=True, help="Include dist_mm (cane-tip height) as an extra channel. On by default; automatically disabled for recordings that predate the sensor")
+    ae_dist_group.add_argument("--no-dist", dest="with_dist", action="store_false", help="Exclude dist_mm and score from the IMU alone")
     ae_parser.add_argument("--normal-by", choices=["event", "ann"], default="event", help="Label source marking a window as a candidate anomaly (default event)")
     ae_parser.add_argument("--normal-ann", type=str, default="0", help="Comma-separated ann values that are normal end to end, for --normal-by ann (default 0). ann-1 is always resolved per window against the event marker, since that is what the annotation means")
     ae_parser.add_argument("--hidden", type=str, default="128,32", help="Comma-separated encoder widths (default 128,32)")
-    ae_parser.add_argument("--latent", type=int, default=8, help="Bottleneck width (default 8)")
+    ae_parser.add_argument("--latent", type=int, default=_D.latent, help=f"Bottleneck width (default {_D.latent})")
     ae_parser.add_argument("--epochs", type=int, default=400, help="Maximum training epochs (default 400)")
     ae_parser.add_argument("--batch-size", type=int, default=32, help="Minibatch size (default 32)")
     ae_parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate (default 1e-3)")
@@ -537,11 +579,13 @@ def main() -> None:
     ae_parser.add_argument("--val-frac", type=float, default=0.2, help="Fraction of normal windows held out for validation (default 0.2)")
     ae_parser.add_argument("--patience", type=int, default=60, help="Early-stopping patience in epochs (default 60)")
     ae_parser.add_argument("--seed", type=int, default=0, help="Random seed (default 0)")
-    ae_parser.add_argument("--threshold-pct", type=float, default=99.0, help="Percentile of held-out normal error used as the anomaly threshold (default 99)")
+    ae_parser.add_argument("--threshold-pct", type=float, default=_D.threshold_pct, help=f"Percentile of held-out normal error used as the anomaly threshold, i.e. the false-alarm budget (default {_D.threshold_pct:g})")
     ae_parser.add_argument("--model-out", type=str, default="out/step_ae/model.pt", help="Where to save the trained model (default out/step_ae/model.pt)")
     ae_parser.add_argument("--load", type=str, default=None, help="Score with a saved model instead of training")
     ae_parser.add_argument("--plot-dir", type=str, default=None, help="Save a diagnostic plot into this directory")
     ae_parser.set_defaults(func=_cmd_step_ae)
+
+    _assert_cli_defaults_match_config(an_parser)
 
     args = parser.parse_args()
     args.func(args)
