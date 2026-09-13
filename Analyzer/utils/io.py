@@ -23,6 +23,18 @@ _REQUIRED_COLUMNS = ("t_ms", "ax_mg", "ay_mg", "az_mg", "gx_mdps", "gy_mdps", "g
 _DIST_COLUMN = "dist_mm"
 _EVENT_COLUMN = "event"
 
+# Bands of the Modulino Distance sensor reading, in millimetres. The reading
+# is between the cane base and the ground and quantizes into three bands rather
+# than behaving like a clean waveform: 90-110 mm is the resting/noise band
+# (cane planted, sensor jitter only), above 118 mm the tip has actually lifted
+# away from the ground, and below 90 mm is a measurement error rather than a
+# real reading. Empirical calibration values for this sensor and mounting.
+# They live here rather than in a single experiment because both the step
+# detector and the windowing preprocessor have to know where the error floor is.
+DIST_ERROR_FLOOR_MM = 90.0
+DIST_REST_HIGH_MM = 110.0
+DIST_STEP_THRESHOLD_MM = 118.0
+
 # rec_00001.csv (legacy, single file) / rec_00001_seg002.csv (segmented) /
 # either with a trailing _ann{-1,0,1} stop annotation.
 _SESSION_FILENAME_RE = re.compile(

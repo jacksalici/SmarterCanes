@@ -13,18 +13,30 @@ import argparse
 from pathlib import Path
 
 from exp.step_ae import (
+    DEFAULT_HOP_S,
     DEFAULT_MAX_LAG_S,
     DEFAULT_TARGET_FS,
     DEFAULT_WINDOW_S,
     StepAEConfig,
     run_step_ae,
 )
+from exp.ae_anomaly import load_descriptions, run_ablation, run_ae_anomaly
+from exp.ae_report import (
+    plot_examples,
+    plot_overview,
+    plot_sessions,
+    plot_traces,
+    write_markdown,
+    write_session_csv,
+    write_window_csv,
+)
+from exp.step_accuracy import compute_window_accuracies, write_csv
 from exp.step_count import (
     DIST_REST_HIGH_MM,
     DIST_STEP_THRESHOLD_MM,
     count_steps,
 )
-from utils.io import group_sessions, load_session
+from utils.io import group_sessions, load_csv, load_session
 
 
 def _sessions_in(path: Path) -> dict[str, list[Path]]:
@@ -74,7 +86,7 @@ def _run_step_count(csv_paths: list[Path], label: str, plot_path: Path | None) -
         print(f"  plot saved to {plot_path}")
 
 
-def _plot_step_count(rec, result, out_path: str) -> None:
+def _plot_step_count(rec, result, out_path: str, accuracy: float | None = None) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -103,7 +115,10 @@ def _plot_step_count(rec, result, out_path: str) -> None:
         label="detected steps",
     )
     axes[3].set_ylabel("|acc|-1g (g)")
-    axes[3].set_title(f"Step detection, all axes combined ({result.n_steps} steps)")
+    title = f"Step detection, all axes combined ({result.n_steps} steps)"
+    if accuracy is not None:
+        title += f" — accuracy {accuracy:.2f}"
+    axes[3].set_title(title)
     axes[3].legend(loc="upper right")
 
     if rec.has_dist:
@@ -125,6 +140,150 @@ def _plot_step_count(rec, result, out_path: str) -> None:
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
+def _cmd_step_accuracy(args: argparse.Namespace) -> None:
+    csv_paths = sorted(args.data.glob(args.glob))
+    if not csv_paths:
+        raise SystemExit(f"no files matching {args.glob!r} found in {args.data}")
+
+    results = compute_window_accuracies(csv_paths, min_gt_steps=args.min_gt_steps)
+    if not results:
+        raise SystemExit(
+            f"no window had >= {args.min_gt_steps} ground-truth steps to score"
+        )
+
+    out_path = Path(args.out)
+    write_csv(results, out_path)
+
+    import numpy as np
+
+    arr = np.array([r.accuracy for r in results])
+    print(f"windows scored: {len(results)} (dropped gt < {args.min_gt_steps})")
+    print(f"  mean accuracy: {arr.mean():.4f}")
+    print(f"  std accuracy:  {arr.std():.4f}")
+
+    if args.plot_dir:
+        plot_dir = Path(args.plot_dir)
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        scored_files = {r.file: r.accuracy for r in results}
+        for path in csv_paths:
+            if path.name not in scored_files:
+                continue
+            rec = load_csv(path)
+            result = count_steps(rec)
+            plot_path = plot_dir / f"{path.stem}.png"
+            _plot_step_count(rec, result, plot_path, accuracy=scored_files[path.name])
+        print(f"  {len(scored_files)} plot(s) saved to {plot_dir}")
+    print(f"  csv written to {out_path}")
+
+
+def _cmd_ae_anomaly(args: argparse.Namespace) -> None:
+    config = StepAEConfig(
+        window_s=args.window_s,
+        target_fs=args.target_fs,
+        max_lag_s=args.max_lag_s,
+        align_iters=args.align_iters,
+        with_dist=args.with_dist,
+        anchor=args.anchor,
+        hop_s=args.hop_s,
+        align_mode=args.align_mode,
+        model=args.model,
+        hidden=tuple(int(v) for v in args.hidden.split(",")),
+        conv_channels=tuple(int(v) for v in args.conv_channels.split(",")),
+        kernel_size=args.kernel_size,
+        latent=args.latent,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        val_frac=args.val_frac,
+        patience=args.patience,
+        seed=args.seed,
+        threshold_pct=args.threshold_pct,
+        score_agg=args.score_agg,
+    )
+
+    descriptions = load_descriptions(Path(args.descriptions))
+    result = run_ae_anomaly(Path(args.train), Path(args.test), config, descriptions)
+
+    m, o = result.window_metrics, result.oracle_metrics
+    n_train = int((result.train_split == "train").sum())
+    n_val = int((result.train_split == "val").sum())
+
+    print(f"train: {result.train_windows.n_windows} windows from "
+          f"{len(set(result.train_windows.session_ids))} session(s) "
+          f"({n_train} train / {n_val} validation)")
+    print(f"  model: {config.model}, latent {config.latent}, "
+          f"input {result.train_windows.x.shape[1]}x{result.train_windows.x.shape[2]}, "
+          f"anchor {config.anchor}, align {config.align_mode}, "
+          f"score {config.score_agg}")
+    print(f"  alignment branches — train: {result.train_windows.source_counts()}, "
+          f"test: {result.test_windows.source_counts()}")
+    print(f"  best epoch {result.best_epoch + 1}/{result.train_loss.size}, "
+          f"train loss {result.train_loss[result.best_epoch]:.5f}, "
+          f"val loss {result.val_loss[result.best_epoch]:.5f}")
+    for note in result.notes:
+        print(f"  note: {note}")
+
+    print(f"test: {result.test_windows.n_windows} windows from "
+          f"{len(result.sessions)} session(s), "
+          f"{int(result.scoreable.sum())} labelled "
+          f"({int(result.y_true.sum())} anomalous, {result.prevalence:.1%} prevalence)")
+    print(f"  threshold (p{config.threshold_pct:g} of held-out normal train error): "
+          f"{result.threshold:.5f}")
+    print("window-level:")
+    print(f"  AUPRC      {result.auprc:.3f}   (chance = prevalence {result.prevalence:.3f})")
+    print(f"  ROC-AUC    {result.roc_auc:.3f}   (chance 0.5)")
+    print(f"  F1         {m.f1:.3f}")
+    print(f"  accuracy   {m.accuracy:.3f}")
+    print(f"  precision  {m.precision:.3f}   recall {m.recall:.3f}   "
+          f"specificity {m.specificity:.3f}")
+    print(f"  confusion  TP {m.tp}  FP {m.fp}  TN {m.tn}  FN {m.fn}")
+    print(f"  oracle F1  {o.f1:.3f} (best possible threshold; peeks at test labels)")
+    print(f"session-level: {sum(s.correct for s in result.sessions)}/{len(result.sessions)} "
+          f"correct ({result.session_accuracy:.0%})")
+    for s in sorted(result.sessions, key=lambda s: (s.label, s.session_id)):
+        mark = "ok  " if s.correct else "MISS"
+        kind = "anomalous" if s.label == 1 else "normal   "
+        print(f"  {mark} rec_{s.session_id} {kind} "
+              f"flagged {s.n_flagged:3d}/{s.n_labeled:3d} ({s.flag_rate:.2f})"
+              + (f"  {s.description}" if s.description else ""))
+
+    ablation = None
+    if args.ablation:
+        print("ablation: re-running the pipeline variants (this takes a few minutes)")
+        import numpy as np
+
+        seeds = tuple(range(args.ablation_seeds))
+        ablation = run_ablation(Path(args.train), Path(args.test), config, descriptions,
+                                seeds=seeds)
+        for name, runs in ablation:
+            au = [r.auprc for r in runs]
+            f1 = [r.window_metrics.f1 for r in runs]
+            sess = [sum(s.correct for s in r.sessions) for r in runs]
+            spread = f" ± {np.std(au):.3f}" if len(runs) > 1 else ""
+            print(f"  {name:44s} windows {int(runs[0].y_true.size):4d}  "
+                  f"AUPRC {np.mean(au):.3f}{spread}  F1 {np.mean(f1):.3f}  "
+                  f"sessions {np.mean(sess):.1f}/{len(runs[0].sessions)}")
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plots = {
+        "Overview: training, score separation, ROC and precision-recall": "overview.png",
+        "Per-session outcome": "sessions.png",
+        "Anomaly score over time, per session": "traces.png",
+        "Best and worst reconstructions": "examples.png",
+    }
+    plot_overview(result, out_dir / "overview.png")
+    plot_sessions(result, out_dir / "sessions.png")
+    plot_traces(result, out_dir / "traces.png")
+    plot_examples(result, out_dir / "examples.png")
+    write_session_csv(result, out_dir / "sessions.csv")
+    write_window_csv(result, out_dir / "windows.csv")
+    write_markdown(result, out_dir / "REPORT.md", plots, ablation)
+    print(f"report, plots and CSVs written to {out_dir}/")
 
 
 def _cmd_step_ae(args: argparse.Namespace) -> None:
@@ -136,6 +295,7 @@ def _cmd_step_ae(args: argparse.Namespace) -> None:
         target_fs=args.target_fs,
         max_lag_s=args.max_lag_s,
         align_iters=args.align_iters,
+        align_mode=args.align_mode,
         with_dist=args.with_dist,
         normal_by=args.normal_by,
         normal_ann=tuple(int(v) for v in args.normal_ann.split(",")),
@@ -177,6 +337,7 @@ def _cmd_step_ae(args: argparse.Namespace) -> None:
         f"max {abs(windows.lags).max()} samples"
     )
     print(f"  alignment sharpness (template energy): {_sharpness_gain(windows):.2f}x")
+    print(f"  alignment mode {result.config.align_mode}, branches {windows.source_counts()}")
     for label in ("train", "val", "candidate"):
         print(f"  {label} windows: {int((result.split == label).sum())}")
     if result.trained:
@@ -317,16 +478,56 @@ def main() -> None:
     step_parser.add_argument("--plot-dir", type=str, default=None, help="Save a diagnostic plot per input file into this directory")
     step_parser.set_defaults(func=_cmd_step_count)
 
+    acc_parser = sub.add_parser("step-accuracy", help="Score per-window step-count accuracy against dist_mm ground truth")
+    acc_parser.add_argument("data", type=Path, help="Directory of rec_*.csv segment files")
+    acc_parser.add_argument("--glob", type=str, default="*_ann0.csv", help="Filename pattern to select windows (default *_ann0.csv)")
+    acc_parser.add_argument("--min-gt-steps", type=int, default=5, help="Drop windows with fewer ground-truth steps than this (default 5)")
+    acc_parser.add_argument("--out", type=str, default="out/step_accuracy.csv", help="Output CSV path (default out/step_accuracy.csv)")
+    acc_parser.add_argument("--plot-dir", type=str, default=None, help="Save a diagnostic plot per scored window into this directory")
+    acc_parser.set_defaults(func=_cmd_step_accuracy)
+
+    an_parser = sub.add_parser("ae-anomaly", help="Train the autoencoder on normal data and evaluate it as an anomaly detector on a labelled test set")
+    an_parser.add_argument("--train", type=str, default="data/train", help="Directory of normal training recordings (default data/train)")
+    an_parser.add_argument("--test", type=str, default="data/test", help="Directory of labelled test recordings (default data/test)")
+    an_parser.add_argument("--descriptions", type=str, default="description.csv", help="Semicolon-separated anomaly descriptions, for the report (default description.csv)")
+    an_parser.add_argument("--out-dir", type=str, default="out/ae_anomaly", help="Where to write the report, plots and CSVs (default out/ae_anomaly)")
+    an_parser.add_argument("--anchor", choices=["step", "slide"], default="slide", help="Windowing scheme: slide avoids depending on a step detector that fails on abnormal gait (default slide)")
+    an_parser.add_argument("--hop-s", type=float, default=DEFAULT_HOP_S, help=f"Sliding-window spacing in seconds (default {DEFAULT_HOP_S:g})")
+    an_parser.add_argument("--align-mode", choices=["none", "xcorr", "step", "mixed"], default="mixed", help="Phase policy: none leaves windows at their anchor; xcorr correlates against the normal template; step centers the nearest detected step; mixed uses step where one was detected and xcorr only as a fallback (default mixed)")
+    an_parser.add_argument("--model", choices=["mlp", "conv"], default="conv", help="Autoencoder architecture (default conv)")
+    an_parser.add_argument("--score-agg", choices=["mean", "chan_norm", "peak"], default="mean", help="How per-sample error becomes one score per window (default mean)")
+    an_parser.add_argument("--window-s", type=float, default=DEFAULT_WINDOW_S, help=f"Window length in seconds (default {DEFAULT_WINDOW_S:g})")
+    an_parser.add_argument("--target-fs", type=float, default=DEFAULT_TARGET_FS, help=f"Resampling rate in Hz (default {DEFAULT_TARGET_FS:g})")
+    an_parser.add_argument("--max-lag-s", type=float, default=DEFAULT_MAX_LAG_S, help=f"Maximum alignment shift in seconds (default {DEFAULT_MAX_LAG_S:g})")
+    an_parser.add_argument("--align-iters", type=int, default=3, help="Template refinement passes (default 3)")
+    an_parser.add_argument("--with-dist", action="store_true", help="Include dist_mm as an extra channel")
+    an_parser.add_argument("--hidden", type=str, default="128,32", help="Comma-separated MLP encoder widths (default 128,32)")
+    an_parser.add_argument("--conv-channels", type=str, default="16,32,32", help="Comma-separated conv encoder widths (default 16,32,32)")
+    an_parser.add_argument("--kernel-size", type=int, default=7, help="Conv kernel size (default 7)")
+    an_parser.add_argument("--latent", type=int, default=16, help="Bottleneck width (default 16)")
+    an_parser.add_argument("--epochs", type=int, default=400, help="Maximum training epochs (default 400)")
+    an_parser.add_argument("--batch-size", type=int, default=32, help="Minibatch size (default 32)")
+    an_parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate (default 1e-3)")
+    an_parser.add_argument("--weight-decay", type=float, default=1e-5, help="Adam weight decay (default 1e-5)")
+    an_parser.add_argument("--val-frac", type=float, default=0.2, help="Fraction of each training session held out for validation and calibration (default 0.2)")
+    an_parser.add_argument("--patience", type=int, default=60, help="Early-stopping patience in epochs (default 60)")
+    an_parser.add_argument("--seed", type=int, default=0, help="Random seed (default 0)")
+    an_parser.add_argument("--threshold-pct", type=float, default=95.0, help="Percentile of held-out normal error used as the threshold, i.e. the false-alarm budget: p95 accepts a 5%% false-alarm rate on normal gait (default 95)")
+    an_parser.add_argument("--ablation", action="store_true", help="Also re-run the pipeline variants (step vs sliding anchors, MLP vs conv, each alignment policy, with and without the distance channel) and add the comparison to the report")
+    an_parser.add_argument("--ablation-seeds", type=int, default=1, help="Run each ablation variant this many times with different seeds and report mean +/- spread; several variants differ by less than that spread (default 1)")
+    an_parser.set_defaults(func=_cmd_ae_anomaly)
+
     ae_parser = sub.add_parser("step-ae", help="Train an autoencoder over aligned step windows and score reconstruction error")
     ae_parser.add_argument("csv", type=Path, help="Path to a rec_*.csv IMU log, or a directory of them")
     ae_parser.add_argument("--window-s", type=float, default=DEFAULT_WINDOW_S, help=f"Window length in seconds (default {DEFAULT_WINDOW_S:g}, about three steps)")
     ae_parser.add_argument("--step-hop", type=int, default=1, help="Anchor a window on every Nth detected step (default 1)")
     ae_parser.add_argument("--target-fs", type=float, default=DEFAULT_TARGET_FS, help=f"Resampling rate in Hz (default {DEFAULT_TARGET_FS:g})")
     ae_parser.add_argument("--max-lag-s", type=float, default=DEFAULT_MAX_LAG_S, help=f"Maximum alignment shift in seconds (default {DEFAULT_MAX_LAG_S:g})")
-    ae_parser.add_argument("--align-iters", type=int, default=3, help="Template refinement passes (default 3)")
+    ae_parser.add_argument("--align-mode", choices=["none", "xcorr", "step", "mixed"], default="xcorr", help="Phase policy (default xcorr; see ae-anomaly for what the four mean)")
+    ae_parser.add_argument("--align-iters", type=int, default=3, help="Template refinement passes, used only when fitting an xcorr template from scratch (default 3)")
     ae_parser.add_argument("--with-dist", action="store_true", help="Include dist_mm as an extra channel (it is the step-detection ground truth, so off by default)")
     ae_parser.add_argument("--normal-by", choices=["event", "ann"], default="event", help="Label source marking a window as a candidate anomaly (default event)")
-    ae_parser.add_argument("--normal-ann", type=str, default="-1", help="Comma-separated ann values treated as normal, for --normal-by ann (default -1)")
+    ae_parser.add_argument("--normal-ann", type=str, default="0", help="Comma-separated ann values that are normal end to end, for --normal-by ann (default 0). ann-1 is always resolved per window against the event marker, since that is what the annotation means")
     ae_parser.add_argument("--hidden", type=str, default="128,32", help="Comma-separated encoder widths (default 128,32)")
     ae_parser.add_argument("--latent", type=int, default=8, help="Bottleneck width (default 8)")
     ae_parser.add_argument("--epochs", type=int, default=400, help="Maximum training epochs (default 400)")

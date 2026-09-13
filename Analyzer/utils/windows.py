@@ -7,12 +7,20 @@ windows, in four stages:
    (the median rate across `data/` is ~67 Hz against a nominal 100 Hz), so a
    window length in seconds would otherwise map to a different number of
    samples in every recording.
-2. Cut one window per anchor event (a detected step), spanning several steps.
-3. Align the windows against a common template by normalized cross-correlation,
-   so the same point of the gait cycle lands at the same index in every window.
-   Anchoring already gets them roughly phase-locked; this removes the residual
-   jitter, which a downstream model would otherwise have to spend capacity
-   modelling as if it were signal.
+2. Cut windows spanning several steps, anchored either on each detected step
+   or on a fixed time grid (`anchor="slide"`). Step anchoring phase-locks the
+   windows for free but ties how much evidence a recording yields to a step
+   detector that degrades on abnormal gait; sliding gives every recording the
+   same coverage per second regardless of what the gait looks like.
+3. Place each window in a common phase, by one of four policies (see
+   `align_windows`): leave it alone, correlate it against a template of normal
+   gait, centre the nearest detected step, or - the default - centre the step
+   where one was detected and correlate only where none was. Phase jitter is
+   worth removing because a downstream model would otherwise spend capacity
+   modelling it as if it were signal; the reason the policy matters is that
+   correlating against a *normal* template lets an anomalous window search for
+   the shift that looks most normal, which is a favour done to exactly the
+   windows that should score badly.
 4. Z-score each channel using statistics fitted on the training windows only.
 
 Both the template and the normalization statistics are *fitted* on normal
@@ -26,6 +34,8 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy.signal import correlate
+
+from utils.io import DIST_ERROR_FLOOR_MM
 
 # Channels fed to a model. dist_mm is deliberately not here by default: it is
 # the ground-truth sensor for step detection, so including it would leak the
@@ -72,6 +82,7 @@ class WindowSet:
     session_ids: np.ndarray  # (n_windows,) session each window came from
     center_times: np.ndarray  # (n_windows,) anchor time in seconds, after alignment
     lags: np.ndarray  # (n_windows,) alignment shift applied, in samples
+    align_source: np.ndarray  # (n_windows,) "step" | "xcorr" | "none"
     is_normal: np.ndarray  # (n_windows,) bool, window treated as normal
     template: np.ndarray  # (L,) alignment template
     align_before: np.ndarray  # (n_windows, L) alignment signal at the raw anchor
@@ -85,6 +96,11 @@ class WindowSet:
     @property
     def window_len(self) -> int:
         return self.x.shape[2]
+
+    def source_counts(self) -> dict[str, int]:
+        """How many windows each alignment branch handled."""
+        names, counts = np.unique(self.align_source, return_counts=True)
+        return {str(n): int(c) for n, c in zip(names, counts)}
 
 
 def to_uniform(
@@ -120,7 +136,13 @@ def to_uniform(
         "acc_mag": rec.acc_mag,
     }
     if with_dist:
-        raw[DIST_CHANNEL] = rec.dist_mm
+        # Readings below the sensor's error floor are measurement failures, not
+        # a tip 9 mm off the ground. They matter here because they are not
+        # evenly spread: they cluster in the fall and long-step recordings,
+        # where the tip leaves the sensor's usable range. Left raw, the model
+        # would partly be detecting sensor dropout rather than gait, so the
+        # floor is clamped exactly as the step detector clamps it.
+        raw[DIST_CHANNEL] = np.maximum(rec.dist_mm, DIST_ERROR_FLOOR_MM)
 
     data = np.vstack([np.interp(t_new, rec.t, raw[c]) for c in channels])
 
@@ -155,8 +177,27 @@ def extract_anchors(
     window_len: int,
     step_hop: int,
     max_lag: int,
+    anchor: str = "step",
+    hop: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pick the anchor (series, center) pairs that yield a full window.
+
+    Two anchoring schemes:
+
+    - `"step"` centers a window on every `step_hop`-th *detected* step. It
+      yields phase-locked windows for free, but it makes the amount of
+      evidence collected from a recording depend on a step detector - and
+      both detectors available here (the acceleration one and the `dist_mm`
+      one) degrade on exactly the abnormal gait this is meant to catch. A
+      shuffled or dragged step never lifts the tip past the distance
+      threshold and never produces a clean shock, so an anomalous recording
+      can yield almost no windows and effectively escape scoring.
+
+    - `"slide"` centers a window every `hop` samples regardless of content.
+      Coverage is then uniform in time and identical for normal and
+      anomalous recordings, which is what makes the per-window scores
+      comparable across classes. Phase is no longer free, so it has to come
+      from alignment or from a shift-tolerant model.
 
     A window is kept only if it fits inside its recording *with `max_lag`
     samples of slack on both sides*, so alignment can later shift it by any
@@ -168,7 +209,17 @@ def extract_anchors(
     centers = []
     for i, series in enumerate(series_list):
         length = series.data.shape[1]
-        for center in series.step_idx[::step_hop]:
+        if anchor == "step":
+            candidates = series.step_idx[::step_hop]
+        elif anchor == "slide":
+            # Centers for which the padded slice stays inside the recording.
+            lo = half + max_lag
+            hi = length - max_lag - window_len + half
+            candidates = np.arange(lo, hi + 1, max(1, hop)) if hi >= lo else np.empty(0, dtype=int)
+        else:
+            raise ValueError(f"unknown anchor scheme: {anchor!r}")
+
+        for center in candidates:
             if center - half - max_lag < 0:
                 continue
             if center - half + window_len + max_lag > length:
@@ -230,6 +281,24 @@ def _best_lag(
     return int(np.argmax(ncc)) - max_lag
 
 
+def _step_lag(series: UniformSeries, center: int, max_lag: int) -> int | None:
+    """Lag bringing the nearest detected step onto the window center.
+
+    This is the phase convention step anchoring produces for free - the anchor
+    step sits at the center - so applying it to a sliding window puts that
+    window into the same convention the step-anchored training windows use.
+
+    Returns None when no detected step lies within `max_lag` of the center,
+    which is the signal to fall back to something that does not need a step
+    detector.
+    """
+    if series.step_idx.size == 0:
+        return None
+    offsets = series.step_idx - center
+    nearest = int(offsets[np.argmin(np.abs(offsets))])
+    return nearest if abs(nearest) <= max_lag else None
+
+
 def align_windows(
     series_list: list[UniformSeries],
     series_i: np.ndarray,
@@ -239,8 +308,30 @@ def align_windows(
     fit_mask: np.ndarray,
     n_iters: int = 3,
     template: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Estimate a per-window alignment lag against a common template.
+    mode: str = "xcorr",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Estimate a per-window alignment lag, by one of four policies.
+
+    - `"none"` leaves every window at its raw anchor.
+    - `"xcorr"` maximizes normalized cross-correlation against a template of
+      the alignment channel (mean-removed `|acc|`).
+    - `"step"` brings the nearest detected step onto the window center.
+    - `"mixed"` uses the step lag where a step is available and falls back to
+      `"xcorr"` where none is, which is the policy this project settled on.
+
+    Why `"mixed"` rather than `"xcorr"` everywhere: cross-correlation picks the
+    shift that makes a window look *most like normal gait*, because the
+    template is built from normal gait. For an anomalous window that is a
+    search for the most innocent-looking pose, and it shrinks the
+    reconstruction error the anomaly score is made of. A step lag has no such
+    bias - it is placement, not matching, and the step detector never sees the
+    template. So the step branch is preferred wherever the evidence for it
+    exists, and the correlation branch only covers windows where no step was
+    detected at all - which on normal gait is almost none, and on abnormal gait
+    is exactly the windows where the gait has stopped looking like stepping.
+
+    Returns (lags, template, source), where `source` records which branch
+    produced each lag so the split can be reported.
 
     The template is refined iteratively on the `fit_mask` windows only: start
     from their mean alignment signal at the raw anchors, re-estimate every
@@ -253,6 +344,9 @@ def align_windows(
 
     Returns (lags, template).
     """
+    if mode not in ("none", "xcorr", "step", "mixed"):
+        raise ValueError(f"unknown alignment mode: {mode!r}")
+
     fit_idx = np.flatnonzero(fit_mask)
     if fit_idx.size == 0:
         raise ValueError("no windows available to fit the alignment template")
@@ -261,32 +355,64 @@ def align_windows(
         return _align_signal(series_list[series_i[i]], centers[i] + lag, window_len)
 
     lags = np.zeros(centers.size, dtype=int)
+    source = np.full(centers.size, "none", dtype=object)
+
+    # Step lags first: they are deterministic, need no template, and are what
+    # the template is then built from under "step" and "mixed".
+    step_lags: dict[int, int] = {}
+    if mode in ("step", "mixed"):
+        for i in range(centers.size):
+            lag = _step_lag(series_list[series_i[i]], int(centers[i]), max_lag)
+            if lag is not None:
+                step_lags[i] = lag
+
+    if mode == "none":
+        if template is None:
+            template = np.mean([_unit(signal_at(i, 0)) for i in fit_idx], axis=0)
+        return lags, template, source.astype(str)
 
     if template is None:
-        template = np.mean([_unit(signal_at(i, 0)) for i in fit_idx], axis=0)
-
-        for _ in range(n_iters):
-            new_lags = np.array(
-                [
-                    _best_lag(
-                        series_list[series_i[i]], centers[i], window_len, max_lag, template
-                    )
-                    for i in fit_idx
-                ]
+        if mode in ("step", "mixed") and any(i in step_lags for i in fit_idx):
+            # Build the template from step-aligned fit windows. No iteration is
+            # needed: unlike correlation lags, step lags do not depend on the
+            # template, so there is no chicken-and-egg to break.
+            template = np.mean(
+                [_unit(signal_at(i, step_lags[i])) for i in fit_idx if i in step_lags], axis=0
             )
-            shift = np.mean(np.abs(new_lags - lags[fit_idx]))
-            lags[fit_idx] = new_lags
-            template = np.mean([_unit(signal_at(i, lags[i])) for i in fit_idx], axis=0)
-            if shift < 1.0:
-                break
+        else:
+            template = np.mean([_unit(signal_at(i, 0)) for i in fit_idx], axis=0)
+
+            for _ in range(n_iters):
+                new_lags = np.array(
+                    [
+                        _best_lag(
+                            series_list[series_i[i]], centers[i], window_len, max_lag, template
+                        )
+                        for i in fit_idx
+                    ]
+                )
+                shift = np.mean(np.abs(new_lags - lags[fit_idx]))
+                lags[fit_idx] = new_lags
+                template = np.mean([_unit(signal_at(i, lags[i])) for i in fit_idx], axis=0)
+                if shift < 1.0:
+                    break
 
     # Final pass over every window (fit or held out) against the frozen template.
     for i in range(centers.size):
-        lags[i] = _best_lag(
-            series_list[series_i[i]], centers[i], window_len, max_lag, template
-        )
+        if mode in ("step", "mixed") and i in step_lags:
+            lags[i] = step_lags[i]
+            source[i] = "step"
+        elif mode == "step":
+            # No step and no fallback requested: leave the window where it is.
+            lags[i] = 0
+            source[i] = "none"
+        else:
+            lags[i] = _best_lag(
+                series_list[series_i[i]], centers[i], window_len, max_lag, template
+            )
+            source[i] = "xcorr"
 
-    return lags, template
+    return lags, template, source.astype(str)
 
 
 def fit_norm_stats(x: np.ndarray) -> NormStats:
@@ -315,6 +441,9 @@ def build_window_set(
     normal_mask_fn=None,
     template: np.ndarray | None = None,
     norm: NormStats | None = None,
+    anchor: str = "step",
+    hop_s: float = 1.0,
+    align_mode: str = "xcorr",
 ) -> WindowSet:
     """Run the whole pipeline: cut, align, mark normal/held-out, normalize.
 
@@ -322,15 +451,28 @@ def build_window_set(
     counts as normal training data; it defaults to all-normal. `template` and
     `norm` may be supplied to reuse a fitted preprocessing state instead of
     refitting (scoring with a saved model).
+
+    `anchor` picks the windowing scheme (see `extract_anchors`); `hop_s` is
+    the spacing between sliding windows, in seconds.
+
+    `align_mode` picks the phase policy (see `align_windows`): `"none"`,
+    `"xcorr"`, `"step"`, or `"mixed"` - step placement where a step was
+    detected, correlation only as a fallback where none was.
     """
     if not series_list:
         raise ValueError("no recordings to window")
 
     fs = series_list[0].fs
     window_len = int(round(window_s * fs))
-    max_lag = int(round(max_lag_s * fs))
+    # With alignment off there is no lag to reserve slack for, so windows may
+    # run right up to the edges of the recording. Every other mode shifts by up
+    # to max_lag, so that much signal has to exist on both sides.
+    max_lag = int(round(max_lag_s * fs)) if align_mode != "none" else 0
+    hop = max(1, int(round(hop_s * fs)))
 
-    series_i, centers = extract_anchors(series_list, window_len, step_hop, max_lag)
+    series_i, centers = extract_anchors(
+        series_list, window_len, step_hop, max_lag, anchor=anchor, hop=hop
+    )
     if centers.size == 0:
         raise ValueError(
             f"no windows of {window_s:g} s fit inside any recording - "
@@ -358,7 +500,7 @@ def build_window_set(
     # in which case every window is a candidate and there is nothing to hold
     # back anyway.
     fit_mask = is_normal if is_normal.any() else np.ones_like(is_normal)
-    lags, template = align_windows(
+    lags, template, align_source = align_windows(
         series_list,
         series_i,
         centers,
@@ -367,6 +509,7 @@ def build_window_set(
         fit_mask=fit_mask,
         n_iters=align_iters,
         template=template,
+        mode=align_mode,
     )
 
     aligned_centers = centers + lags
@@ -399,6 +542,7 @@ def build_window_set(
         session_ids=session_ids,
         center_times=center_times,
         lags=lags,
+        align_source=align_source,
         is_normal=is_normal,
         template=template,
         align_before=align_before,

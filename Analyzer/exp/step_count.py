@@ -19,7 +19,20 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import find_peaks
 
-from utils.io import ImuRecording
+from utils.io import (
+    DIST_ERROR_FLOOR_MM,
+    DIST_REST_HIGH_MM,
+    DIST_STEP_THRESHOLD_MM,
+    ImuRecording,
+)
+
+__all__ = [
+    "DIST_ERROR_FLOOR_MM",
+    "DIST_REST_HIGH_MM",
+    "DIST_STEP_THRESHOLD_MM",
+    "StepCountResult",
+    "count_steps",
+]
 
 _STEP_MIN_INTERVAL_S = 0.4  # cap cadence at 150 steps/min
 # Detection height = mean + k * std of |acc|-1g over the whole recording.
@@ -29,15 +42,9 @@ _STEP_HEIGHT_SIGMA_K = 4.3
 # std alone could let residual sensor noise get picked up as "steps".
 _MIN_HEIGHT_G = 0.02
 
-# Ground-truth (dist_mm) step detector: reading is between the cane base and
-# the ground, and behaves as three bands rather than a smooth waveform.
-# 110-120 mm is the resting/noise band (cane planted, sensor jitter only);
-# above 125 mm the cane tip has actually lifted off/away from the ground,
-# i.e. a step; below 110 mm is a sensor measurement error, not a real
-# reading. These are empirical calibration values for this sensor/mounting.
-DIST_ERROR_FLOOR_MM = 110.0
-DIST_REST_HIGH_MM = 120.0
-DIST_STEP_THRESHOLD_MM = 125.0
+# Band thresholds for the distance sensor live in utils.io, because the
+# windowing preprocessor needs the same error floor; re-exported here so
+# existing callers keep importing them from this module.
 _DIST_MIN_INTERVAL_S = 0.25  # cap cadence at 240 steps/min
 # A swing's mid-flight sensor jitter can dip back into the resting band for
 # a sample or two before continuing up - a bare touch isn't enough evidence

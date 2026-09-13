@@ -15,8 +15,8 @@ model makes on *held-out normal* windows, so it is calibrated on what normal
 looks like rather than on any assumption about what anomalies look like -
 which matters because the anomaly labels are not settled yet.
 
-Caveat on scale: `data/` currently holds a few hundred windows, far fewer
-than the input dimension. The bottleneck, weight decay and the by-session
+Caveat on scale: `data/` currently yields ~760 step-anchored windows, still
+fewer than the input dimension (7 x 150). The bottleneck, weight decay and the by-session
 validation split are all there to keep that honest, and the train/validation
 gap in the loss curves is the thing to watch before trusting a score.
 """
@@ -35,7 +35,7 @@ from exp.step_count import count_steps
 from utils.io import ImuRecording
 from utils.windows import NormStats, WindowSet, build_window_set, to_uniform
 
-# Measured over data/: the median interval between detected steps is ~1.94 s,
+# Measured over data/: the median interval between detected steps is ~1.92 s,
 # so three steps is ~6 s rather than the ~3 s a normal walking cadence would
 # suggest - cane-assisted gait here is slow and deliberate.
 DEFAULT_WINDOW_S = 6.0
@@ -47,6 +47,14 @@ DEFAULT_MAX_LAG_S = 1.0
 # dimension (channels x samples) down, which matters with a few hundred
 # windows to learn from.
 DEFAULT_TARGET_FS = 25.0
+# Sliding-window spacing. A quarter of a window: dense enough that a brief
+# event cannot fall between two windows, sparse enough that neighbours are not
+# near-duplicates of each other.
+DEFAULT_HOP_S = 1.5
+# Annotation for a recording that is normal apart from at least one marked
+# moment. It is the one value whose meaning is per-window rather than
+# per-session, so it gets resolved against the event marker.
+PARTIAL_ANN = -1
 
 
 @dataclass
@@ -58,11 +66,17 @@ class StepAEConfig:
     max_lag_s: float = DEFAULT_MAX_LAG_S
     align_iters: int = 3
     with_dist: bool = False
+    anchor: str = "step"  # "step" or "slide"
+    hop_s: float = DEFAULT_HOP_S  # sliding-window spacing, for anchor="slide"
+    align_mode: str = "xcorr"  # "none" | "xcorr" | "step" | "mixed"
     # Which windows count as normal training data
     normal_by: str = "event"  # "event" or "ann"
-    normal_ann: tuple[int, ...] = (-1,)
+    normal_ann: tuple[int, ...] = (0,)  # annotations that are normal end to end
     # Model / training
-    hidden: tuple[int, ...] = (128, 32)
+    model: str = "mlp"  # "mlp" or "conv"
+    hidden: tuple[int, ...] = (128, 32)  # MLP encoder widths
+    conv_channels: tuple[int, ...] = (16, 32, 32)  # conv encoder widths
+    kernel_size: int = 7
     latent: int = 8
     epochs: int = 400
     batch_size: int = 32
@@ -72,6 +86,8 @@ class StepAEConfig:
     patience: int = 60
     seed: int = 0
     threshold_pct: float = 99.0
+    # How per-sample squared error is collapsed into one score per window.
+    score_agg: str = "mean"  # "mean" | "chan_norm" | "peak"
 
 
 @dataclass
@@ -105,10 +121,19 @@ class StepAEResult:
 
 
 class StepAutoencoder(nn.Module):
-    """A small symmetric MLP autoencoder over a flattened (C, L) window."""
+    """A small symmetric MLP autoencoder over a flattened (C, L) window.
 
-    def __init__(self, n_inputs: int, hidden: tuple[int, ...], latent: int) -> None:
+    Takes and returns `(N, C, L)`; the flattening is internal, so this and
+    `ConvAutoencoder` are interchangeable behind `build_model`.
+    """
+
+    def __init__(
+        self, n_channels: int, window_len: int, hidden: tuple[int, ...], latent: int
+    ) -> None:
         super().__init__()
+        self.n_channels = n_channels
+        self.window_len = window_len
+        n_inputs = n_channels * window_len
         widths = [n_inputs, *hidden]
 
         encoder: list[nn.Module] = []
@@ -128,24 +153,130 @@ class StepAutoencoder(nn.Module):
         self.decoder = nn.Sequential(*decoder)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.decoder(self.encoder(x))
+        n = x.shape[0]
+        flat = x.reshape(n, -1)
+        return self.decoder(self.encoder(flat)).reshape(n, self.n_channels, self.window_len)
+
+
+class ConvAutoencoder(nn.Module):
+    """A 1-D convolutional autoencoder over a (C, L) window.
+
+    Preferred over the MLP for two reasons. First, parameter economy: the MLP's
+    first layer alone is `C*L x hidden[0]` weights (about 134k at 7 channels,
+    150 samples and a width of 128), against a few hundred per conv kernel -
+    and there are only a few hundred training windows here, so most of those
+    weights cannot be fitted honestly.
+
+    Second, and the reason it pairs with `anchor="slide"`: convolution is
+    shift-equivariant, so a gait pattern is recognized the same way wherever it
+    falls in the window. The MLP has to learn each phase separately, which is
+    why it needs the cross-correlation alignment stage - and that stage lets an
+    anomalous window shift itself towards whatever looks most normal. A conv
+    model absorbs phase into the architecture instead of into the score.
+
+    Strided convolutions downsample; the decoder mirrors them with explicit
+    interpolation back to each recorded length, so any window length works
+    without the off-by-one that `ConvTranspose1d` output padding invites.
+    """
+
+    def __init__(
+        self,
+        n_channels: int,
+        window_len: int,
+        channels: tuple[int, ...] = (16, 32, 32),
+        latent: int = 8,
+        kernel_size: int = 7,
+    ) -> None:
+        super().__init__()
+        self.n_channels = n_channels
+        self.window_len = window_len
+
+        widths = [n_channels, *channels]
+        padding = kernel_size // 2
+
+        # Record the length after each stride-2 stage so the decoder can undo it.
+        lengths = [window_len]
+        for _ in channels:
+            lengths.append((lengths[-1] + 1) // 2)
+        self.lengths = lengths
+
+        self.encoder_convs = nn.ModuleList(
+            nn.Conv1d(a, b, kernel_size, stride=2, padding=padding)
+            for a, b in zip(widths, widths[1:])
+        )
+        self.to_latent = nn.Linear(channels[-1] * lengths[-1], latent)
+        self.from_latent = nn.Linear(latent, channels[-1] * lengths[-1])
+
+        widths_back = list(reversed(widths))  # e.g. [32, 32, 16, C]
+        self.decoder_convs = nn.ModuleList(
+            nn.Conv1d(a, b, kernel_size, padding=padding)
+            for a, b in zip(widths_back, widths_back[1:])
+        )
+        self.act = nn.ReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x
+        for conv in self.encoder_convs:
+            h = self.act(conv(h))
+        n = h.shape[0]
+        z = self.to_latent(h.reshape(n, -1))
+
+        h = self.from_latent(z).reshape(n, self.encoder_convs[-1].out_channels, self.lengths[-1])
+        for i, conv in enumerate(self.decoder_convs):
+            h = nn.functional.interpolate(h, size=self.lengths[-2 - i], mode="linear")
+            h = conv(h)
+            # Linear output on the last layer, for the same reason as the MLP.
+            if i < len(self.decoder_convs) - 1:
+                h = self.act(h)
+        return h
+
+
+def build_model(config: StepAEConfig, n_channels: int, window_len: int) -> nn.Module:
+    """Instantiate the autoencoder named by `config.model`."""
+    if config.model == "mlp":
+        return StepAutoencoder(n_channels, window_len, tuple(config.hidden), config.latent)
+    if config.model == "conv":
+        return ConvAutoencoder(
+            n_channels, window_len, tuple(config.conv_channels), config.latent, config.kernel_size
+        )
+    raise ValueError(f"unknown model: {config.model!r}")
+
+
+def _window_has_event(series, center: int, window_len: int) -> bool:
+    """Whether a user-marked sample falls inside this window."""
+    start = center - window_len // 2
+    end = start + window_len
+    return bool(np.any((series.event_idx >= start) & (series.event_idx < end)))
 
 
 def _normal_mask_fn(config: StepAEConfig):
     """Build the predicate deciding whether a window is normal training data.
 
-    Two label sources, because which one marks an anomaly is still to be
-    pinned down: `event` uses the in-recording click marker (a window
-    containing one is held out as a candidate), `ann` uses the per-session
-    stop annotation in the filename. A recording that carries no label at all
-    is treated as normal, so older recordings stay usable.
+    Two label sources: `event` uses the in-recording click marker alone (a
+    window containing one is held out as a candidate), `ann` uses the
+    per-session annotation in the filename. A recording that carries no label
+    at all is treated as normal, so older recordings stay usable.
+
+    The `ann` source follows the recording convention the dataset actually
+    uses, which is not a flat allow-list:
+
+    - `ann0`  normal throughout - every window is training data.
+    - `ann1`  abnormal throughout - every window is a candidate.
+    - `ann-1` normal *except* for at least one marked moment. These sessions
+      are mostly ordinary walking, so discarding them wholesale would throw
+      away usable training data; instead each window is normal unless it
+      contains an `event` marker. A recording annotated `ann-1` that carries
+      no event column has no way to say where the abnormal stretch is, so it
+      is treated as a candidate rather than silently trusted.
+
+    `--normal-ann` therefore lists the annotations that are normal *end to
+    end*; the `ann-1` rule is fixed by what the annotation means, not by the
+    flag, which is why it applies whether or not -1 appears in that list.
     """
     if config.normal_by == "event":
 
         def by_event(series, center: int, window_len: int) -> bool:
-            start = center - window_len // 2
-            end = start + window_len
-            return not np.any((series.event_idx >= start) & (series.event_idx < end))
+            return not _window_has_event(series, center, window_len)
 
         return by_event
 
@@ -153,7 +284,13 @@ def _normal_mask_fn(config: StepAEConfig):
         allowed = set(config.normal_ann)
 
         def by_ann(series, center: int, window_len: int) -> bool:
-            return series.ann is None or series.ann in allowed
+            if series.ann is None or series.ann in allowed:
+                return True
+            if series.ann == PARTIAL_ANN:
+                if series.event_idx.size == 0:
+                    return False
+                return not _window_has_event(series, center, window_len)
+            return False
 
         return by_ann
 
@@ -209,7 +346,7 @@ def _split_normal(
 
 
 def _train(
-    model: StepAutoencoder,
+    model: nn.Module,
     x_train: torch.Tensor,
     x_val: torch.Tensor,
     config: StepAEConfig,
@@ -260,14 +397,11 @@ def _train(
     return np.array(train_losses), np.array(val_losses), best_epoch
 
 
-def _score(model: StepAutoencoder, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _score(model: nn.Module, x: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-window and per-channel reconstruction error, plus the reconstructions."""
-    n, n_channels, window_len = x.shape
-    flat = torch.from_numpy(x.reshape(n, -1)).float()
     model.eval()
     with torch.no_grad():
-        recon_flat = model(flat)
-    recon = recon_flat.numpy().reshape(n, n_channels, window_len)
+        recon = model(torch.from_numpy(x).float()).numpy()
     squared_error = (recon - x) ** 2
     return squared_error.mean(axis=(1, 2)), squared_error.mean(axis=2), recon
 
@@ -304,6 +438,9 @@ def build_windows(
         normal_mask_fn=_normal_mask_fn(config),
         template=template,
         norm=norm,
+        anchor=config.anchor,
+        hop_s=config.hop_s,
+        align_mode=config.align_mode,
     )
 
 
@@ -332,8 +469,7 @@ def run_step_ae(
     windows = build_windows(recs, config, template=template, norm=norm)
     split, notes = _split_normal(windows, config.val_frac, config.seed)
 
-    n_inputs = windows.x.shape[1] * windows.x.shape[2]
-    model = StepAutoencoder(n_inputs, tuple(config.hidden), config.latent)
+    model = build_model(config, windows.x.shape[1], windows.x.shape[2])
 
     if checkpoint is not None:
         model.load_state_dict(checkpoint["state_dict"])
@@ -341,12 +477,8 @@ def run_step_ae(
         val_loss = checkpoint["val_loss"]
         best_epoch = checkpoint["best_epoch"]
     else:
-        x_train = torch.from_numpy(
-            windows.x[split == "train"].reshape((split == "train").sum(), -1)
-        ).float()
-        x_val = torch.from_numpy(
-            windows.x[split == "val"].reshape((split == "val").sum(), -1)
-        ).float()
+        x_train = torch.from_numpy(windows.x[split == "train"]).float()
+        x_val = torch.from_numpy(windows.x[split == "val"]).float()
         if x_train.shape[0] == 0:
             raise ValueError("no training windows: every window was held out as a candidate")
         train_loss, val_loss, best_epoch = _train(model, x_train, x_val, config)
