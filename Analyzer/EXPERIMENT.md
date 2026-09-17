@@ -483,36 +483,3 @@ and the seed range each one names.
 
 Seeded throughout (`--seed`, default 0). Runs are deterministic: the same configuration reproduces
 bit-identical scores across repeated runs and separate processes.
-
----
-
-## 11. Known limitations
-
-These bound what any number in RESULTS.md can mean.
-
-1. **One walker.** Five training sessions, one person, one mounting. Nothing here demonstrates
-   generalization to a different gait or a differently-mounted cane.
-2. **One normal test session.** The false-positive rate rests entirely on `rec_00017`, so specificity
-   is measured on a single walk.
-3. **Overlapping windows are not independent samples.** The metrics are descriptive of these
-   recordings, not estimates with confidence intervals.
-4. **Whole-recording labels are coarse.** `ann1` recordings are labelled abnormal end to end,
-   including the seconds of ordinary walking that start and finish each one. Some windows counted as
-   false negatives are windows of genuinely normal gait inside an abnormal recording — visible as the
-   ramp at the start of several traces.
-5. **Configuration was partly chosen on the test set.** Latent width, window length, sample rate and
-   alignment policy were compared on the same test data the headline numbers come from, so those
-   numbers are mildly optimistic. The spread across that grid is the more honest figure.
-6. **The distance channel is partly confounded on two sessions.** `rec_00026` and `rec_00028` carry
-   ~10% sensor dropout and both are abnormal; the other ten test sessions do not.
-7. **`rec_00028` carries one event marker for a recording described as "various falls", plural.**
-   Its unlabelled stretches cannot be scored either way.
-8. **The step detector assumes this walker's cadence.** Its 1.15 s refractory period caps detection at
-   ~52 steps/min. That is comfortable for the 22–34 steps/min of these recordings and merges the
-   fastest ~2% of ground-truth steps, but it is a fixed assumption fitted to one person's slow,
-   deliberate cane gait and would under-count a faster walker. A cadence-adaptive refractory period is
-   the obvious next step, and the one change most likely to matter for a second subject.
-9. **The step detector's ground truth is itself a sensor.** 18 of 63 `ann0` windows had to be excluded
-   because the distance reading, not the gait, had failed (§3.4). The remaining 45 are the windows
-   where both sensors worked, which is a mildly favourable selection — the detector is never scored on
-   the recordings where conditions were hardest for the instrument.

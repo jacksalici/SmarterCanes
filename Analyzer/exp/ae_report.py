@@ -53,6 +53,70 @@ def _anomaly_palette(n: int) -> list[str]:
     return [plt.get_cmap("Reds")(v) for v in np.linspace(0.35, 0.95, n)]
 
 
+def _log_ticks(ax, axis: str = "x") -> None:
+    """Label a log axis with plain numbers at 1-2-5 steps, plus minor tick marks.
+
+    Matplotlib's default on a log axis is a power-of-ten label every decade,
+    which over the two decades these errors span gives two or three labels and
+    no sense of scale in between. Ticking at 1, 2, 5 per decade and printing
+    them as ordinary numbers ("0.5", "2", "20") keeps the axis readable, and
+    the unlabelled minor ticks carry the spacing that tells a reader the scale
+    is logarithmic.
+
+    On an axis spanning less than a decade - several of the per-session trace
+    panels - `LogLocator` falls back to evenly spaced ticks of its own, so the
+    labels come out as 1.5, 2, 2.5 rather than 1, 2, 5. That is the right
+    behaviour for such a range and is left alone; the formatter still prints
+    them as plain numbers.
+    """
+    from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
+
+    target = ax.xaxis if axis == "x" else ax.yaxis
+    target.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 5.0), numticks=20))
+    target.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v:g}"))
+    target.set_minor_locator(LogLocator(base=10.0, subs=tuple(np.arange(2, 10) * 0.1), numticks=100))
+    target.set_minor_formatter(NullFormatter())
+    ax.tick_params(axis=axis, which="major", length=5, labelsize=11)
+    ax.tick_params(axis=axis, which="minor", length=2.5)
+
+
+def _threshold_divider(
+    ax, threshold: float, axis: str = "x", fontsize: float = 11, inside: bool = False
+) -> None:
+    """Draw the decision threshold and name the verdict on each side of it.
+
+    The line alone says where the cut is but not which way it points, and on a
+    reconstruction-error axis that is the one thing a reader cannot infer from
+    the picture. Naming both sides turns the figure from a pair of
+    distributions into a statement about a decision.
+
+    Drawn solid and heavier than anything else on the axes, deliberately: these
+    figures already use dashed lines for per-type medians, and a dashed
+    threshold reads as one more median rather than as the boundary everything
+    else is being judged against.
+
+    `inside` puts the labels just below the top of the axes instead of above
+    it, for panels whose top edge already carries a title.
+    """
+    label_kw = dict(fontsize=fontsize, fontweight="semibold", zorder=7)
+    if axis == "x":
+        ax.axvline(threshold, color="black", linewidth=2.2, zorder=6)
+        trans = ax.get_xaxis_transform()  # x in data units, y in axes fraction
+        y, va = (0.97, "top") if inside else (1.015, "bottom")
+        ax.text(threshold, y, "not anomaly  ", transform=trans, ha="right", va=va,
+                color=_NORMAL_COLOR, **label_kw)
+        ax.text(threshold, y, "  anomaly", transform=trans, ha="left", va=va,
+                color=_ANOMALY_COLOR, **label_kw)
+    else:
+        ax.axhline(threshold, color="black", linewidth=2.2, zorder=6)
+        trans = ax.get_yaxis_transform()  # y in data units, x in axes fraction
+        x, ha = (0.995, "right") if inside else (1.005, "left")
+        ax.text(x, threshold, "anomaly ", transform=trans, ha=ha, va="bottom",
+                color=_ANOMALY_COLOR, **label_kw)
+        ax.text(x, threshold, "not anomaly ", transform=trans, ha=ha, va="top",
+                color=_NORMAL_COLOR, **label_kw)
+
+
 def _merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Collapse overlapping intervals into the fewest covering the same range."""
     merged: list[tuple[float, float]] = []
@@ -163,6 +227,7 @@ def plot_overview(result: AEAnomalyResult, out_path: Path) -> None:
     axes[0, 0].plot(epochs, result.val_loss, linewidth=0.9, label="validation")
     axes[0, 0].axvline(result.best_epoch + 1, color="gray", linestyle="--", linewidth=0.7)
     axes[0, 0].set_yscale("log")
+    _log_ticks(axes[0, 0], "y")
     axes[0, 0].set_title(
         f"Reconstruction loss (best epoch {result.best_epoch + 1}/{result.train_loss.size})"
     )
@@ -181,9 +246,9 @@ def plot_overview(result: AEAnomalyResult, out_path: Path) -> None:
                     label=f"anomalous test ({anomalous.size})")
     axes[0, 1].hist(result.val_scores, bins=bins, histtype="step", color="black",
                     linewidth=1.0, label=f"held-out normal train ({result.val_scores.size})")
-    axes[0, 1].axvline(result.threshold, color="gray", linestyle="--", linewidth=1.0,
-                       label=f"threshold (p{result.config.threshold_pct:g})")
     axes[0, 1].set_xscale("log")
+    _log_ticks(axes[0, 1], "x")
+    _threshold_divider(axes[0, 1], result.threshold, "x", fontsize=9, inside=True)
     axes[0, 1].set_title("Reconstruction error per window")
     axes[0, 1].set_xlabel("mean squared error")
     axes[0, 1].set_ylabel("windows")
@@ -256,14 +321,14 @@ def plot_sessions(result: AEAnomalyResult, out_path: Path) -> None:
         patch.set_alpha(0.6)
     for median in bp["medians"]:
         median.set_color("black")
-    axes[1].axhline(result.threshold, color="gray", linestyle="--", linewidth=1.0,
-                    label="threshold")
     axes[1].set_yscale("log")
+    _log_ticks(axes[1], "y")
+    _threshold_divider(axes[1], result.threshold, "y", fontsize=9, inside=True)
     axes[1].set_ylabel("reconstruction error")
     axes[1].set_title("Per-session score distribution")
     axes[1].set_xticks(x)
     axes[1].set_xticklabels(names, rotation=45, ha="right", fontsize=8)
-    axes[1].legend(fontsize=8)
+    # No legend here: the threshold was its only entry and now names itself.
 
     fig.tight_layout()
     _save(fig, out_path)
@@ -290,7 +355,7 @@ def plot_traces(result: AEAnomalyResult, out_path: Path) -> None:
     axes = np.atleast_1d(axes).ravel()
 
     w_set = result.test_windows
-    for ax, s in zip(axes, sessions):
+    for y_index, (ax, s) in enumerate(zip(axes, sessions)):
         mask = w_set.session_ids == s.session_id
         t = w_set.center_times[mask]
         sc = result.scores[mask]
@@ -311,8 +376,14 @@ def plot_traces(result: AEAnomalyResult, out_path: Path) -> None:
              for i in np.flatnonzero(labels == LABEL_DROP)]
         ):
             ax.axvspan(lo, hi, color="gray", alpha=0.15, linewidth=0)
-        ax.axhline(result.threshold, color="gray", linestyle="--", linewidth=0.8)
         ax.set_yscale("log")
+        _log_ticks(ax, "y")
+        ax.tick_params(axis="y", which="major", labelsize=7)
+        if y_index == 0:
+            # Named once rather than on all twelve panels, where it would be noise.
+            _threshold_divider(ax, result.threshold, "y", fontsize=7, inside=True)
+        else:
+            ax.axhline(result.threshold, color="black", linewidth=1.4, zorder=6)
         verdict = "OK" if s.correct else "MISS"
         ax.set_title(
             f"rec_{s.session_id} ({_label_name(s.label)}) - {verdict}"
@@ -374,11 +445,12 @@ def group_scores_by_type(
 def plot_error_histogram(result: AEAnomalyResult, out_path: Path) -> None:
     """Reconstruction error by anomaly type: normal in blue, each type its own red.
 
-    Deliberately bare - no title, axis labels, tick values or threshold line -
-    so the figure carries only the distributions, their medians and the legend,
-    and can be dropped into a paper or slide that supplies its own caption and
-    scale. Written as both PNG and PDF, the PDF being the one to embed. The dashed vertical line in each colour is that type's median, which
-    with the numeric axis gone is the only quantitative cue the figure keeps.
+    Kept spare - no title and no y axis - so the figure can be dropped into a
+    paper or slide that supplies its own caption. What it does carry is the two
+    things a reader cannot reconstruct from the shapes alone: a labelled
+    logarithmic error scale, and the decision threshold with the verdict named
+    on each side. Written as both PNG and PDF, the PDF being the one to embed.
+    The dashed vertical line in each colour is that type's median.
 
     Overlaid with transparency rather than stacked: stacking answers "how many
     windows in this bin", but the question here is where each *type* sits
@@ -413,21 +485,25 @@ def plot_error_histogram(result: AEAnomalyResult, out_path: Path) -> None:
             scores, bins=bins, histtype="step", color=color, linewidth=1.6, zorder=3,
             label=name,
         )
-        # Median per type. With no axis scale on the figure, these are what let
-        # a reader place the distributions against one another - the spacing
-        # between two medians is the only quantitative cue left.
+        # Median per type, so two distributions can be placed against each
+        # other even where their bodies overlap.
         ax.axvline(
             np.median(scores), color=color, linestyle=(0, (4, 2)), linewidth=2.0, zorder=4
         )
 
     ax.set_xscale("log")
-    ax.tick_params(
-        axis="both", which="both",
-        labelbottom=False, labelleft=False, length=0,
-    )
-    ax.legend(fontsize=13, loc="upper right", framealpha=0.92, borderpad=0.7,
-              labelspacing=0.45, handlelength=1.6)
-    for side in ("top", "right"):
+    _log_ticks(ax, "x")
+    ax.set_xlabel("reconstruction error", fontsize=12)
+
+    # Headroom for the threshold's side labels, and a legend dropped clear of
+    # them rather than fighting for the same corner.
+    ax.set_ylim(0, ax.get_ylim()[1] * 1.08)
+    _threshold_divider(ax, result.threshold, "x", fontsize=12)
+
+    ax.tick_params(axis="y", which="both", labelleft=False, length=0)
+    ax.legend(fontsize=12, loc="upper right", framealpha=0.92, borderpad=0.6,
+              labelspacing=0.4, handlelength=1.6)
+    for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
 
     fig.tight_layout()
