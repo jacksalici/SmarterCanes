@@ -2,9 +2,9 @@
 """SmartCane IMU analyzer entry point.
 
 Usage:
-    python main.py step-count data/rec_00004_seg000_ann1.csv [--plot out.png]
-    python main.py step-count data [--plot-dir out/]
-    python main.py step-ae data [--window-s 6.0] [--plot-dir out/step_ae]
+    python main.py step-count ../Dataset/data/rec_00004_seg000_ann1.csv [--plot out.png]
+    python main.py step-count ../Dataset/data [--plot-dir out/]
+    python main.py step-ae ../Dataset/data [--window-s 6.0] [--plot-dir out/step_ae]
 """
 
 from __future__ import annotations
@@ -38,10 +38,32 @@ from exp.step_count import (
     DIST_STEP_THRESHOLD_MM,
     count_steps,
 )
-from utils.io import group_sessions, load_csv, load_session
+from utils.io import group_sessions, load_csv, load_session, normal_paths, paths_for_split
 
 # Defaults live on StepAEConfig so the two commands cannot drift apart.
 _D = StepAEConfig()
+
+# The dataset lives alongside the Analyzer, not inside it: `Dataset/data` holds
+# every recording flat, and `Dataset/split.csv` says which of `train`, `test`
+# or `walk` each one belongs to.
+DATASET_DIR = Path(__file__).resolve().parent.parent / "Dataset"
+DEFAULT_DATA_DIR = DATASET_DIR / "data"
+DEFAULT_SPLIT_CSV = DATASET_DIR / "split.csv"
+
+# `normal` - every ann0/legacy recording, `train`/`test`/`walk`, `all` alike -
+# is the default pool for ordinary gait analysis: it is what the numbers in
+# `out/` were measured over, since `ae-anomaly` is the only command anomalous
+# recordings are meant to feed.
+DEFAULT_SPLIT = "normal"
+
+
+def _paths_for_split_arg(data_dir: Path, splits: str) -> list[Path]:
+    """Resolve a `--split` value against `data_dir`, in `Dataset/split.csv` terms."""
+    if splits == "normal":
+        return normal_paths(data_dir)
+    if splits == "all":
+        return sorted(data_dir.glob("*.csv"))
+    return paths_for_split(data_dir, DEFAULT_SPLIT_CSV, set(splits.split(",")))
 
 
 def _save_figure(fig, out_path: Path | str) -> None:
@@ -52,12 +74,22 @@ def _save_figure(fig, out_path: Path | str) -> None:
     fig.savefig(out_path.with_suffix(".pdf"))
 
 
-def _sessions_in(path: Path) -> dict[str, list[Path]]:
-    """Resolve a file-or-directory argument into sessions of segment paths."""
+def _sessions_in(path: Path, splits: str = DEFAULT_SPLIT) -> dict[str, list[Path]]:
+    """Resolve a file-or-directory argument into sessions of segment paths.
+
+    When `path` is the dataset directory, `splits` narrows it: `normal`
+    (default) is every ann0/legacy recording, `train`/`test`/`walk` (or a
+    comma-separated mix) are the `Dataset/split.csv` labels, and `all` is the
+    whole pool including labelled anomalies. Any other directory is used
+    as-is, unfiltered.
+    """
     if not path.is_dir():
         return {path.stem: [path]}
 
-    csv_paths = sorted(path.glob("*.csv"))
+    if path == DEFAULT_DATA_DIR:
+        csv_paths = _paths_for_split_arg(path, splits)
+    else:
+        csv_paths = sorted(path.glob("*.csv"))
     if not csv_paths:
         raise SystemExit(f"no .csv files found in {path}")
 
@@ -69,7 +101,7 @@ def _sessions_in(path: Path) -> dict[str, list[Path]]:
 
 def _cmd_step_count(args: argparse.Namespace) -> None:
     if args.csv.is_dir():
-        sessions = _sessions_in(args.csv)
+        sessions = _sessions_in(args.csv, args.split)
 
         for session_id, session_paths in sorted(sessions.items()):
             plot_path = Path(args.plot_dir) / f"rec_{session_id}.png" if args.plot_dir else None
@@ -157,7 +189,10 @@ def _plot_step_count(rec, result, out_path: str, accuracy: float | None = None) 
 
 
 def _cmd_step_accuracy(args: argparse.Namespace) -> None:
-    csv_paths = sorted(args.data.glob(args.glob))
+    if args.data == DEFAULT_DATA_DIR:
+        csv_paths = [p for p in _paths_for_split_arg(args.data, args.split) if p.match(args.glob)]
+    else:
+        csv_paths = sorted(args.data.glob(args.glob))
     if not csv_paths:
         raise SystemExit(f"no files matching {args.glob!r} found in {args.data}")
 
@@ -227,7 +262,13 @@ def _cmd_ae_anomaly(args: argparse.Namespace) -> None:
     )
 
     descriptions = load_descriptions(Path(args.descriptions))
-    result = run_ae_anomaly(Path(args.train), Path(args.test), config, descriptions)
+    train_paths = paths_for_split(args.data, args.split_csv, {"train"})
+    test_paths = paths_for_split(args.data, args.split_csv, {"test"})
+    if not train_paths:
+        raise SystemExit(f"no 'train' recordings found in {args.split_csv}")
+    if not test_paths:
+        raise SystemExit(f"no 'test' recordings found in {args.split_csv}")
+    result = run_ae_anomaly(train_paths, test_paths, config, descriptions)
 
     m, o = result.window_metrics, result.oracle_metrics
     n_train = int((result.train_split == "train").sum())
@@ -287,7 +328,7 @@ def _cmd_ae_anomaly(args: argparse.Namespace) -> None:
 
 
 def _cmd_step_ae(args: argparse.Namespace) -> None:
-    sessions = _sessions_in(args.csv)
+    sessions = _sessions_in(args.csv, args.split)
 
     config = StepAEConfig(
         window_s=args.window_s,
@@ -500,13 +541,15 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     step_parser = sub.add_parser("step-count", help="Count steps from a recording, or all recordings in a directory")
-    step_parser.add_argument("csv", type=Path, help="Path to a rec_*.csv IMU log, or a directory of them")
+    step_parser.add_argument("csv", type=Path, nargs="?", default=DEFAULT_DATA_DIR, help=f"Path to a rec_*.csv IMU log, or a directory of them (default {DEFAULT_DATA_DIR})")
+    step_parser.add_argument("--split", type=str, default=DEFAULT_SPLIT, help="Restrict a directory input: normal (every ann0/legacy recording - the default), all (the whole pool, anomalies included), or a comma-separated subset of Dataset/split.csv labels (train, test, walk)")
     step_parser.add_argument("--plot", type=str, default=None, help="Save a diagnostic plot to this path (single-file input only)")
     step_parser.add_argument("--plot-dir", type=str, default=None, help="Save a diagnostic plot per input file into this directory")
     step_parser.set_defaults(func=_cmd_step_count)
 
     acc_parser = sub.add_parser("step-accuracy", help="Score per-window step-count accuracy against dist_mm ground truth")
-    acc_parser.add_argument("data", type=Path, help="Directory of rec_*.csv segment files")
+    acc_parser.add_argument("data", type=Path, nargs="?", default=DEFAULT_DATA_DIR, help=f"Directory of rec_*.csv segment files (default {DEFAULT_DATA_DIR})")
+    acc_parser.add_argument("--split", type=str, default=DEFAULT_SPLIT, help="Restrict to: normal (every ann0/legacy recording - the default), all (the whole pool, anomalies included), or a comma-separated subset of Dataset/split.csv labels (train, test, walk)")
     acc_parser.add_argument("--glob", type=str, default="*_ann0.csv", help="Filename pattern to select windows (default *_ann0.csv)")
     acc_parser.add_argument("--min-gt-steps", type=int, default=5, help="Drop windows with fewer ground-truth steps than this (default 5)")
     acc_parser.add_argument("--min-gt-cadence", type=float, default=20.0, help="Drop windows whose ground-truth cadence is below this, in steps/min - they are distance-sensor failures rather than slow walking (default 20)")
@@ -515,8 +558,8 @@ def main() -> None:
     acc_parser.set_defaults(func=_cmd_step_accuracy)
 
     an_parser = sub.add_parser("ae-anomaly", help="Train the autoencoder on normal data and evaluate it as an anomaly detector on a labelled test set")
-    an_parser.add_argument("--train", type=str, default="data/train", help="Directory of normal training recordings (default data/train)")
-    an_parser.add_argument("--test", type=str, default="data/test", help="Directory of labelled test recordings (default data/test)")
+    an_parser.add_argument("--data", type=Path, default=DEFAULT_DATA_DIR, help=f"Directory of rec_*.csv recordings (default {DEFAULT_DATA_DIR})")
+    an_parser.add_argument("--split-csv", type=Path, default=DEFAULT_SPLIT_CSV, help=f"filename,split table selecting the train/test recordings from --data (default {DEFAULT_SPLIT_CSV})")
     an_parser.add_argument("--descriptions", type=str, default="description.csv", help="Semicolon-separated anomaly descriptions, for the report (default description.csv)")
     an_parser.add_argument("--out-dir", type=str, default="out/ae_anomaly", help="Where to write the report, plots and CSVs (default out/ae_anomaly)")
     an_parser.add_argument("--anchor", choices=["step", "slide"], default=_D.anchor, help="Windowing scheme: slide avoids depending on a step detector that fails on abnormal gait (default slide)")
@@ -546,7 +589,8 @@ def main() -> None:
     an_parser.set_defaults(func=_cmd_ae_anomaly)
 
     ae_parser = sub.add_parser("step-ae", help="Train an autoencoder over aligned step windows and score reconstruction error")
-    ae_parser.add_argument("csv", type=Path, help="Path to a rec_*.csv IMU log, or a directory of them")
+    ae_parser.add_argument("csv", type=Path, nargs="?", default=DEFAULT_DATA_DIR, help=f"Path to a rec_*.csv IMU log, or a directory of them (default {DEFAULT_DATA_DIR})")
+    ae_parser.add_argument("--split", type=str, default=DEFAULT_SPLIT, help="Restrict a directory input: normal (every ann0/legacy recording - the default), all (the whole pool, anomalies included), or a comma-separated subset of Dataset/split.csv labels (train, test, walk)")
     ae_parser.add_argument("--window-s", type=float, default=DEFAULT_WINDOW_S, help=f"Window length in seconds (default {DEFAULT_WINDOW_S:g}, about three steps)")
     ae_parser.add_argument("--step-hop", type=int, default=1, help="Anchor a window on every Nth detected step (default 1)")
     ae_parser.add_argument("--target-fs", type=float, default=DEFAULT_TARGET_FS, help=f"Resampling rate in Hz (default {DEFAULT_TARGET_FS:g})")

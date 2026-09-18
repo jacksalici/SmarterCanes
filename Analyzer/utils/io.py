@@ -180,6 +180,46 @@ def has_dist_column(path: str | Path) -> bool:
     return _DIST_COLUMN in {name.strip() for name in header}
 
 
+def load_split(path: str | Path) -> dict[str, str]:
+    """Read the `filename,split` table that assigns each recording to
+    `train`, `test` or `walk`.
+
+    `train` is the normal-only pool `ae-anomaly` fits on; `test` is the
+    labelled pool it evaluates against, normal and anomalous alike; `walk` is
+    the rest - ordinary walking that plays no part in that protocol.
+    """
+    path = Path(path)
+    split: dict[str, str] = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            split[row["filename"]] = row["split"]
+    return split
+
+
+def paths_for_split(data_dir: str | Path, split_csv: str | Path, splits: set[str]) -> list[Path]:
+    """List the recordings in `data_dir` whose split falls in `splits`."""
+    data_dir = Path(data_dir)
+    split = load_split(split_csv)
+    return sorted(
+        data_dir / name for name, s in split.items() if s in splits and (data_dir / name).exists()
+    )
+
+
+def normal_paths(data_dir: str | Path) -> list[Path]:
+    """List every `ann0` (or legacy, un-annotated) recording in `data_dir`.
+
+    This is the pool ordinary gait analysis - `step-count`, `step-accuracy`,
+    `step-ae` - runs over by default: every recording not carrying an
+    annotated abnormal stretch, `train` and `walk` alike, plus any `test`
+    recording (such as the held-out normal control session) that happens to
+    be `ann0` too. `ann1`/`ann-1` recordings are deliberately excluded - they
+    exist to be scored by `ae-anomaly`, not averaged into a step-count report.
+    """
+    data_dir = Path(data_dir)
+    return sorted(p for p in data_dir.glob("*.csv") if parse_ann(p) in (None, 0))
+
+
 def group_sessions(paths: list[Path]) -> dict[str, list[Path]]:
     """Group recording files by session, in segment order.
 

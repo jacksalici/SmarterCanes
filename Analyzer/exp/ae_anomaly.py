@@ -2,9 +2,10 @@
 
 `step-ae` trains and scores one pool of recordings. This runs the protocol an
 actual detector has to survive: fit everything - alignment template,
-normalization statistics, weights, decision threshold - on `data/train`, which
-is normal gait only, then score `data/test` without refitting anything, and
-measure against labels the model never saw.
+normalization statistics, weights, decision threshold - on the `train` split
+of `Dataset/split.csv`, which is normal gait only, then score the `test`
+split without refitting anything, and measure against labels the model never
+saw.
 
 Labels come from the filename annotation, with one exception:
 
@@ -232,17 +233,17 @@ def load_descriptions(path: Path) -> dict[str, str]:
     return descriptions
 
 
-def load_series(data_dir: Path, config: StepAEConfig) -> list[UniformSeries]:
-    """Load every session in a directory and resample onto the uniform grid.
+def load_series(paths: list[Path], config: StepAEConfig) -> list[UniformSeries]:
+    """Load every session among `paths` and resample onto the uniform grid.
 
     Step times are still computed, because `anchor="step"` needs them and they
     cost little; with `anchor="slide"` nothing downstream reads them. A session
     with no detected steps is therefore kept under sliding anchors - dropping
     it would be the step detector silently deciding what gets evaluated.
     """
-    sessions = group_sessions(sorted(data_dir.glob("*.csv")))
+    sessions = group_sessions(sorted(paths))
     if not sessions:
-        raise ValueError(f"no rec_*.csv recordings found in {data_dir}")
+        raise ValueError("no rec_*.csv recordings found")
 
     series_list = []
     for session_id, paths in sorted(sessions.items()):
@@ -343,12 +344,12 @@ def split_train_val(
 
 
 def run_ae_anomaly(
-    train_dir: Path,
-    test_dir: Path,
+    train_paths: list[Path],
+    test_paths: list[Path],
     config: StepAEConfig,
     descriptions: dict[str, str] | None = None,
 ) -> AEAnomalyResult:
-    """Fit on `train_dir`, score `test_dir`, and measure."""
+    """Fit on `train_paths`, score `test_paths`, and measure."""
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
     descriptions = descriptions or {}
@@ -356,12 +357,10 @@ def run_ae_anomaly(
     # Resolved across both splits at once: train and test must end up with the
     # same channels, so the distance channel is only usable if every recording
     # on both sides carries it.
-    config, dist_notes = resolve_with_dist(
-        config, sorted(train_dir.glob("*.csv")) + sorted(test_dir.glob("*.csv"))
-    )
+    config, dist_notes = resolve_with_dist(config, sorted(train_paths) + sorted(test_paths))
 
     # --- fit: preprocessing and model, on normal training data only ---
-    train_series = load_series(train_dir, config)
+    train_series = load_series(train_paths, config)
     train_windows = build_window_set(
         train_series,
         window_s=config.window_s,
@@ -398,7 +397,7 @@ def run_ae_anomaly(
     threshold = float(np.percentile(val_scores, config.threshold_pct))
 
     # --- score: test data through the frozen pipeline ---
-    test_series = load_series(test_dir, config)
+    test_series = load_series(test_paths, config)
     test_windows = build_window_set(
         test_series,
         window_s=config.window_s,

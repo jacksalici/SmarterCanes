@@ -2,12 +2,6 @@
 
 Analyzes IMU logs recorded from an instrumented walking cane.
 
-- **[EXPERIMENT.md](EXPERIMENT.md)** — the experimental design: what is measured, and why each choice
-  was made.
-- **[RESULTS.md](RESULTS.md)** — the measured outcomes, including the pipeline comparison and the controlled
-  comparisons.
-- This file — code layout and command reference.
-
 ## Architecture
 
 - `main.py` — CLI entry point, dispatches to experiments; owns all printing and plotting
@@ -16,9 +10,21 @@ Analyzes IMU logs recorded from an instrumented walking cane.
   - `windows.py` — windowing preprocessing: resampling, step-anchored *or* sliding windowing, four alignment policies, normalization
   - `metrics.py` — ROC, precision-recall, AUPRC and threshold metrics over numpy
 - `exp/` — one module per experiment (`ae_report.py` is the reporting half of `ae_anomaly.py`)
-- `data/` — raw `rec_*.csv` recordings; `data/train/` (normal only) and `data/test/` (labelled)
-  hold the split used by `ae-anomaly`
 - `out/` — generated plots and model checkpoints (git-ignored)
+
+The recordings themselves live outside the Analyzer, in `../Dataset/`:
+
+- `Dataset/data/` — every `rec_*.csv` recording, flat, no subfolders
+- `Dataset/split.csv` — `filename,split` table labelling each recording `train`, `test` or `walk`.
+  `train` (normal gait only) and `test` (labelled, normal and anomalous alike) are the pair
+  `ae-anomaly` fits and evaluates on; `walk` is the rest of the pool, with no role in that protocol.
+
+  `step-count`, `step-accuracy` and `step-ae` take `--split` to choose which of `Dataset/data` they
+  run over: the default, `normal`, is every `ann0`/legacy recording regardless of its `split.csv`
+  label — `train`, `walk`, and the handful of `test` recordings (such as the held-out normal control
+  session) that are `ann0` too — since ordinary gait analysis has no use for the labelled anomalies
+  `ae-anomaly` exists to score. `all` is the whole pool, anomalies included; a comma-separated subset
+  of `train`, `test`, `walk` selects by `split.csv` label directly, anomalies and all.
 
 ## Experiments
 
@@ -45,8 +51,8 @@ Analyzes IMU logs recorded from an instrumented walking cane.
   steps, this asks what a step *looks like*. See below.
 
 - **ae-anomaly** (`exp/ae_anomaly.py`, reporting in `exp/ae_report.py`) — the same autoencoder put
-  through the protocol a detector actually has to survive: everything is fitted on `data/train`
-  (normal gait only) and applied frozen to `data/test`, which carries labels the model never sees.
+  through the protocol a detector actually has to survive: everything is fitted on the `train` split
+  (normal gait only) and applied frozen to the `test` split, which carries labels the model never sees.
   Reports AUPRC, ROC-AUC, F1 and accuracy per window plus a per-session verdict, and writes a
   standalone report with plots. See below.
 
@@ -54,7 +60,7 @@ Analyzes IMU logs recorded from an instrumented walking cane.
 
 Four preprocessing stages (`utils/windows.py`), then the model (`exp/step_ae.py`).
 
-1. **Resample.** The firmware's sample interval jitters — the median rate across `data/` is ~67 Hz
+1. **Resample.** The firmware's sample interval jitters — the median rate across the dataset is ~67 Hz
    against a nominal 100 Hz — so a window length in seconds would otherwise map to a different number
    of samples in every recording. Every channel is linearly interpolated onto a uniform grid at
    `--target-fs` (default 25 Hz, enough for gait shape and the strike transient while keeping the input
@@ -62,7 +68,7 @@ Four preprocessing stages (`utils/windows.py`), then the model (`exp/step_ae.py`
    so interpolating them would smear or erase them.
 
 2. **Window.** Windows of `--window-s` seconds (default 6.0 ≈ three steps: the median interval between
-   detected steps in `data/` is 1.92 s, cane-assisted gait here being slow and deliberate — a plain
+   detected steps in the dataset is 1.92 s, cane-assisted gait here being slow and deliberate — a plain
    walking cadence would put three steps nearer 3 s), cut every `--hop-s` seconds under the default
    `--anchor slide`. `--anchor step` instead centres one window on each detected step (with
    `--step-hop` to take every Nth); it phase-locks windows for free but ties how much evidence a
@@ -93,7 +99,7 @@ Four preprocessing stages (`utils/windows.py`), then the model (`exp/step_ae.py`
    collapse the phase structure. The printed sharpness gain is the ratio of mean-signal energy after
    alignment to before — averaging misaligned copies of one pattern cancels it out, so above 1 means
    the windows now agree on where the pattern is. Read it against the anchoring: under `--anchor step`
-   the windows start nearly phase-locked, so the gain is modest (1.45× on `data/train`), while under
+   the windows start nearly phase-locked, so the gain is modest (1.45× on the `train` split), while under
    `--anchor slide` they start at arbitrary phase and the "before" mean almost cancels, so the ratio
    runs into the tens. A large number there means the baseline was random, not that something is wrong.
 
@@ -155,39 +161,47 @@ pipeline the model was trained on.
   usable training data. An `ann-1` recording carrying no `event` column has no way to say where the
   abnormal stretch is, so it becomes a candidate rather than being silently trusted.
 
-  On `data/test` this yields 40 candidates from 187 step-anchored windows: the 37 from the `ann1`
+  On the `test` split this yields 40 candidates from 187 step-anchored windows: the 37 from the `ann1`
   sessions, plus the 3 `ann-1` windows holding rec_00028's marker, with that recording's other 26
   windows kept as normal.
 
-**Caveat on scale.** `data/` currently yields ~760 step-anchored windows, still fewer than the input
+**Caveat on scale.** The dataset currently yields ~760 step-anchored windows, still fewer than the input
 dimension (7 × 150 = 1050).
 The bottleneck, `--weight-decay` and the by-session validation split are all there to keep that honest;
 the train/validation gap in the loss curves is the thing to check before trusting a score.
 
 ## Commands
 
+All four commands default to `../Dataset/data`, so the directory argument below can be omitted; it is
+shown for clarity. `--split` (on `step-count`, `step-accuracy`, `step-ae`) narrows that directory:
+`normal` (default) is every `ann0`/legacy recording; `all` is the whole pool, anomalies included; a
+comma-separated subset of `train`, `test`, `walk` selects by `Dataset/split.csv` label.
+
 ```bash
 # step counting: one session
-uv run main.py step-count data/rec_00004_seg000_ann1.csv --plot out.png
+uv run main.py step-count ../Dataset/data/rec_00004_seg000_ann1.csv --plot out.png
 
 # step counting: every recording in a directory, grouped into sessions
-uv run main.py step-count data --plot-dir out/
+uv run main.py step-count ../Dataset/data --plot-dir out/
+
+# step counting over the whole dataset, labelled anomalies included
+uv run main.py step-count --split all --plot-dir out/
 
 # step-count accuracy against the dist_mm ground truth, per window
-uv run main.py step-accuracy data --plot-dir out/step_accuracy
+uv run main.py step-accuracy ../Dataset/data --plot-dir out/step_accuracy
 
 # autoencoder: train on all recordings and score them
-uv run main.py step-ae data --plot-dir out/step_ae
+uv run main.py step-ae ../Dataset/data --plot-dir out/step_ae
 
 # a different window length, and windows anchored on every other detected step
-uv run main.py step-ae data --window-s 3.5 --anchor step --step-hop 2 --plot-dir out/step_ae
+uv run main.py step-ae ../Dataset/data --window-s 3.5 --anchor step --step-hop 2 --plot-dir out/step_ae
 
 # use the filename annotation as the label source instead of the event marker
-uv run main.py step-ae data --normal-by ann
+uv run main.py step-ae ../Dataset/data --normal-by ann
 
 # score with a saved model instead of training
 # (reuses its template, statistics and calibrated threshold)
-uv run main.py step-ae data --load out/step_ae/model.pt --plot-dir out/step_ae
+uv run main.py step-ae ../Dataset/data --load out/step_ae/model.pt --plot-dir out/step_ae
 ```
 
 The `step-ae` plot has five panels: the alignment signal's mean ± std before and after alignment (does
@@ -199,8 +213,8 @@ threshold, and the worst-reconstructed window against its reconstruction.
 
 `step-ae` trains and scores one pool of recordings, which cannot answer whether the detector works —
 for that the fit and the measurement have to be separated. `ae-anomaly` fits the alignment template,
-the normalization statistics, the weights and the decision threshold on `data/train` and applies all
-four frozen to `data/test`. No test label enters the pipeline at any point.
+the normalization statistics, the weights and the decision threshold on the `train` split and applies all
+four frozen to the `test` split. No test label enters the pipeline at any point.
 
 **Labels** come from the filename annotation. `ann0` is normal and every window is a negative; `ann1`
 is abnormal gait throughout and every window is a positive; `ann-1` is a normal recording containing
