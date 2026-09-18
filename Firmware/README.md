@@ -51,29 +51,34 @@ Five-layer design:
 
 ## Build & Deploy
 
-`bwc` is the default PlatformIO environment (see `platformio.ini`), so `-e bwc` can be omitted below.
+`cane` is the default PlatformIO environment (see `platformio.ini`), so `-e cane` can be omitted below.
 
 **Build:**
 ```bash
 cd Firmware
-pio run -e bwc
+pio run -e cane
 ```
 
 **Upload:**
 ```bash
-pio run -e bwc -t upload
+pio run -e cane -t upload
 ```
 
 **Monitor serial output (115200 baud):**
 ```bash
-pio device monitor -e bwc -b 115200
+pio device monitor -e cane -b 115200
 ```
 
 **Clean build:**
 ```bash
-pio run -e bwc --target clean
-pio run -e bwc
+pio run -e cane --target clean
+pio run -e cane
 ```
+
+## Power
+
+See [POWER_ANALYSIS.md](POWER_ANALYSIS.md) for the component-by-component current budget, estimated
+battery life per scenario, and power-saving opportunities not yet implemented.
 
 ## Dashboard
 

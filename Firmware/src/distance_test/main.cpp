@@ -3,7 +3,7 @@
 #include <Modulino.h>
 
 // Standalone bring-up test for the Modulino Distance sensor (VL53L4CD),
-// independent of the main `bwc` firmware. Prints one distance reading per
+// independent of the main `cane` firmware. Prints one distance reading per
 // line so the Arduino IDE / PlatformIO Serial Plotter can graph it live -
 // useful for checking wiring/mounting without recording a whole session.
 //
