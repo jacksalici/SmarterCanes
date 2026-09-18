@@ -1,24 +1,12 @@
 """Experiment 2: an autoencoder over aligned step windows, for anomaly detection.
 
-Where experiment 1 answers *how many* steps a recording contains, this one
-asks what a step *looks like*. Windows spanning a few steps are cut around
-detected strikes, phase-aligned against a common template and z-scored (see
-`utils/windows.py`), then a deliberately small MLP autoencoder is trained to
-reconstruct them - on normal data only.
-
-The model is therefore only ever shown ordinary gait, and a bottleneck far
-narrower than the input forces it to learn the few degrees of freedom that
-ordinary gait actually has. Reconstruction error then works as an anomaly
-score: a window it cannot reproduce is a window unlike anything it was
-trained on. The decision threshold is a high percentile of the error the
-model makes on *held-out normal* windows, so it is calibrated on what normal
-looks like rather than on any assumption about what anomalies look like -
-which matters because the anomaly labels are not settled yet.
-
-Caveat on scale: `data/` currently yields ~760 step-anchored windows, still
-fewer than the input dimension (7 x 150). The bottleneck, weight decay and the by-session
-validation split are all there to keep that honest, and the train/validation
-gap in the loss curves is the thing to watch before trusting a score.
+Windows spanning a few steps are cut around detected strikes, phase-aligned
+against a common template and z-scored (see `utils/windows.py`), then an
+autoencoder trained on normal data only reconstructs them. A bottleneck far
+narrower than the input forces it to learn the few degrees of freedom
+ordinary gait has, so reconstruction error works as an anomaly score. The
+decision threshold is a high percentile of the error on held-out normal
+windows only.
 """
 
 from __future__ import annotations
@@ -35,25 +23,20 @@ from exp.step_count import count_steps
 from utils.io import ImuRecording, has_dist_column
 from utils.windows import NormStats, WindowSet, build_window_set, to_uniform
 
-# Measured over data/: the median interval between detected steps is ~1.92 s,
-# so three steps is ~6 s rather than the ~3 s a normal walking cadence would
-# suggest - cane-assisted gait here is slow and deliberate.
+# ~3 steps at this dataset's ~1.92 s median step interval (slower than a
+# normal walking cadence - cane-assisted gait is deliberate).
 DEFAULT_WINDOW_S = 6.0
-# Alignment search range, ~half a step interval: wide enough to fix a
-# mis-anchored window, narrow enough that a window can't align onto the
-# neighbouring step and collapse the phase structure we're trying to keep.
+# ~half a step interval: wide enough to fix a mis-anchored window, narrow
+# enough not to align onto the neighbouring step.
 DEFAULT_MAX_LAG_S = 1.0
-# 25 Hz keeps gait shape and the strike transient while holding the input
-# dimension (channels x samples) down, which matters with a few hundred
-# windows to learn from.
+# Keeps gait shape and the strike transient while holding the input
+# dimension down for the few hundred available training windows.
 DEFAULT_TARGET_FS = 25.0
-# Sliding-window spacing. A quarter of a window: dense enough that a brief
-# event cannot fall between two windows, sparse enough that neighbours are not
-# near-duplicates of each other.
+# A quarter of a window: dense enough that a brief event can't fall between
+# two windows, sparse enough that neighbours aren't near-duplicates.
 DEFAULT_HOP_S = 1.5
-# Annotation for a recording that is normal apart from at least one marked
-# moment. It is the one value whose meaning is per-window rather than
-# per-session, so it gets resolved against the event marker.
+# ann value for "normal except at least one marked moment" - resolved
+# per-window against the event marker rather than per-session.
 PARTIAL_ANN = -1
 
 
@@ -123,10 +106,10 @@ class StepAEResult:
 
 
 class StepAutoencoder(nn.Module):
-    """A small symmetric MLP autoencoder over a flattened (C, L) window.
+    """A symmetric MLP autoencoder over a flattened (C, L) window.
 
-    Takes and returns `(N, C, L)`; the flattening is internal, so this and
-    `ConvAutoencoder` are interchangeable behind `build_model`.
+    Takes and returns `(N, C, L)`, interchangeable with `ConvAutoencoder`
+    behind `build_model`.
     """
 
     def __init__(
@@ -148,9 +131,8 @@ class StepAutoencoder(nn.Module):
         decoder: list[nn.Module] = []
         for a, b in zip(widths_back, widths_back[1:]):
             decoder += [nn.Linear(a, b), nn.ReLU()]
-        # Linear output: the target is z-scored, so it is not bounded to [0, 1]
-        # and squashing it would clip exactly the large excursions that carry
-        # the anomaly signal.
+        # Linear output: target is z-scored, so squashing would clip the
+        # large excursions that carry the anomaly signal.
         decoder.append(nn.Linear(widths_back[-1], n_inputs))
         self.decoder = nn.Sequential(*decoder)
 
@@ -163,22 +145,13 @@ class StepAutoencoder(nn.Module):
 class ConvAutoencoder(nn.Module):
     """A 1-D convolutional autoencoder over a (C, L) window.
 
-    Preferred over the MLP for two reasons. First, parameter economy: the MLP's
-    first layer alone is `C*L x hidden[0]` weights (about 134k at 7 channels,
-    150 samples and a width of 128), against a few hundred per conv kernel -
-    and there are only a few hundred training windows here, so most of those
-    weights cannot be fitted honestly.
-
-    Second, and the reason it pairs with `anchor="slide"`: convolution is
-    shift-equivariant, so a gait pattern is recognized the same way wherever it
-    falls in the window. The MLP has to learn each phase separately, which is
-    why it needs the cross-correlation alignment stage - and that stage lets an
-    anomalous window shift itself towards whatever looks most normal. A conv
-    model absorbs phase into the architecture instead of into the score.
+    Preferred over the MLP: far fewer parameters for the same window (the
+    MLP's first layer alone is `C*L x hidden[0]`), and shift-equivariant, so
+    it pairs with `anchor="slide"` without needing phase alignment.
 
     Strided convolutions downsample; the decoder mirrors them with explicit
-    interpolation back to each recorded length, so any window length works
-    without the off-by-one that `ConvTranspose1d` output padding invites.
+    interpolation, so any window length works without the off-by-one
+    `ConvTranspose1d` output padding invites.
     """
 
     def __init__(
@@ -196,7 +169,6 @@ class ConvAutoencoder(nn.Module):
         widths = [n_channels, *channels]
         padding = kernel_size // 2
 
-        # Record the length after each stride-2 stage so the decoder can undo it.
         lengths = [window_len]
         for _ in channels:
             lengths.append((lengths[-1] + 1) // 2)
@@ -245,13 +217,8 @@ def build_model(config: StepAEConfig, n_channels: int, window_len: int) -> nn.Mo
 
 
 def resolve_with_dist(config: StepAEConfig, paths: list[Path]) -> tuple[StepAEConfig, list[str]]:
-    """Turn `with_dist` off when the data cannot supply it.
-
-    The distance channel is on by default because it measurably helps, but
-    `dist_mm` was added by a later firmware revision, so older recordings
-    simply do not have it. Rather than failing, the request is downgraded and
-    the reason reported - and the *resolved* value is what gets stored in a
-    checkpoint, so a reloaded model never disagrees with its own input width.
+    """Turn `with_dist` off when some recording lacks `dist_mm`, rather than
+    failing. The resolved value is what gets stored in a checkpoint.
     """
     if not config.with_dist:
         return config, []
@@ -274,26 +241,11 @@ def _window_has_event(series, center: int, window_len: int) -> bool:
 def _normal_mask_fn(config: StepAEConfig):
     """Build the predicate deciding whether a window is normal training data.
 
-    Two label sources: `event` uses the in-recording click marker alone (a
-    window containing one is held out as a candidate), `ann` uses the
-    per-session annotation in the filename. A recording that carries no label
-    at all is treated as normal, so older recordings stay usable.
-
-    The `ann` source follows the recording convention the dataset actually
-    uses, which is not a flat allow-list:
-
-    - `ann0`  normal throughout - every window is training data.
-    - `ann1`  abnormal throughout - every window is a candidate.
-    - `ann-1` normal *except* for at least one marked moment. These sessions
-      are mostly ordinary walking, so discarding them wholesale would throw
-      away usable training data; instead each window is normal unless it
-      contains an `event` marker. A recording annotated `ann-1` that carries
-      no event column has no way to say where the abnormal stretch is, so it
-      is treated as a candidate rather than silently trusted.
-
-    `--normal-ann` therefore lists the annotations that are normal *end to
-    end*; the `ann-1` rule is fixed by what the annotation means, not by the
-    flag, which is why it applies whether or not -1 appears in that list.
+    `event`: a window containing the click marker is held out as a candidate.
+    `ann`: per-session filename annotation - `ann0` all normal, `ann1` all
+    candidate, `ann-1` normal unless the window contains an `event` marker
+    (always, regardless of `--normal-ann`, since that's what the annotation
+    means). No annotation at all is treated as normal.
     """
     if config.normal_by == "event":
 
@@ -324,12 +276,9 @@ def _split_normal(
 ) -> tuple[np.ndarray, list[str]]:
     """Label each window "train" / "val" / "candidate".
 
-    Normal windows are split by *session*, not by window: consecutive windows
-    overlap heavily, so a window-level split would put near-duplicates on both
-    sides and make the validation loss meaningless. When only one session has
-    normal windows there is no such split available, so it falls back to a
-    contiguous split in time (still better than random, which would interleave
-    overlapping windows) and says so.
+    Normal windows are split by session, not by window (consecutive windows
+    overlap heavily). Falls back to a contiguous split in time when only one
+    session has normal windows.
     """
     split = np.where(windows.is_normal, "train", "candidate").astype(object)
     notes: list[str] = []
@@ -346,8 +295,7 @@ def _split_normal(
         order = rng.permutation(sessions)
         val_sessions: list[str] = []
         n_val = 0
-        # Leave at least one session for training, however the counts land.
-        for session in order[:-1]:
+        for session in order[:-1]:  # leave at least one session for training
             if n_val >= n_val_target:
                 break
             val_sessions.append(session)
@@ -475,8 +423,8 @@ def run_step_ae(
     """Preprocess, train (or load) and score.
 
     With `load_path`, the saved template and normalization statistics are
-    reused for preprocessing as well as the weights, so a checkpoint scores
-    new recordings through exactly the pipeline it was trained on.
+    reused, so a checkpoint scores new recordings through the pipeline it
+    was trained on.
     """
     torch.manual_seed(config.seed)
 
@@ -517,15 +465,9 @@ def run_step_ae(
     scores, channel_error, recon = _score(model, windows.x)
 
     if checkpoint is not None and "threshold" in checkpoint:
-        # A loaded model keeps the threshold it was calibrated with. Re-deriving
-        # it from the recordings being scored would calibrate on data that may
-        # well contain the anomalies - the whole point of the checkpoint is that
-        # the operating point was fixed on known-normal windows beforehand.
         threshold = float(checkpoint["threshold"])
         notes.append(f"threshold {threshold:.4f} taken from the checkpoint, not recalibrated")
     else:
-        # Calibrate on held-out normal windows if there are any - the error on
-        # windows the model was fitted to is optimistically low.
         calib_mask = split == "val"
         if not calib_mask.any():
             calib_mask = split == "train"

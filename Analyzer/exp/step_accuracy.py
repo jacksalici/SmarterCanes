@@ -1,30 +1,10 @@
 """Per-window step-count accuracy against the dist_mm ground truth.
 
-Each `ann-0` file in `data/` is one independent 30-second segment. For every
-such segment, `count_steps` gives both the detected step count (from
-acceleration) and the ground-truth count (from `dist_mm`); this compares the
-two per window rather than across a stitched session, since the annotation
-and segmentation are per-file here.
-
-Accuracy per window is 1 - |detected - ground_truth| / ground_truth, i.e. how
-close the detected count came to ground truth relative to its size (clipped
-at 0 so a wildly-off window doesn't go negative). Windows with too few
-ground-truth steps (`min_gt_steps`, default 5) are dropped entirely: a low
-count makes both the relative error noisy and the window itself too short a
-stretch of gait to say much about detector accuracy.
-
-Windows whose ground-truth *rate* is implausibly low are dropped too
-(`min_gt_cadence_spm`, default 20). A count can clear `min_gt_steps` and still
-be a ground-truth failure rather than a slow walk: the distance sensor detects
-a step as a rising crossing back out of the resting band, so whenever the tip
-reading never returns to that band - the sensor lost the ground, the cane was
-carried, the baseline drifted - real steps become invisible and the count
-collapses. Those windows are recognisable because the tip reads as lifted for
-far longer than a swing (2-32 s against 1.0-1.5 s on sound windows), and
-scoring the detector against them measures the sensor, not the detector.
-Scoreable windows sit at 22-34 steps/min, so a floor of 20 steps/min - one
-step per three seconds, slower than any continuous walk here - separates the
-two without cutting into real gait.
+Accuracy per window is 1 - |detected - ground_truth| / ground_truth, clipped
+at 0. Windows are dropped if they have too few ground-truth steps
+(`min_gt_steps`) or an implausibly low ground-truth cadence
+(`min_gt_cadence_spm`) - the latter catches a distance-sensor failure (tip
+reading stuck away from the resting band) rather than a slow walk.
 """
 
 from __future__ import annotations

@@ -1,15 +1,7 @@
-"""Experiment 1: count steps from the cane's acceleration signal.
+"""Experiment 1: count steps as isolated shocks in |acc| deviation from 1 g.
 
-Approach: a cane tap/strike is a sharp, broadband mechanical shock, not a
-smooth rhythmic oscillation, so band-passing it around a cadence band (the
-previous approach) spreads one impulse's energy into a ringing filter
-response with several peaks, over-counting steps by roughly 3x. Instead,
-this looks for large isolated excursions of the raw acceleration magnitude
-away from 1 g, using all three axes: a real strike is a big enough shock to
-show up above the walking/handling noise floor on the combined magnitude,
-however it's oriented. The height threshold is set from the noise floor of
-this specific recording (mean + k*std of |acc|-1g) rather than a fixed
-value, and calibrated against ground-truth (dist_mm) step counts.
+Detection height is mean + k*std of |acc|-1g for the specific recording,
+calibrated against ground-truth (dist_mm) step counts.
 """
 
 from __future__ import annotations
@@ -34,39 +26,23 @@ __all__ = [
     "count_steps",
 ]
 
-# Refractory period between strikes. Ground-truth step intervals on these
-# recordings have a median of 1.97 s and a 1st percentile of 0.98 s, so cane
-# cadence tops out near 60 steps/min - nothing like the 150 steps/min the
-# previous 0.4 s gate allowed. That slack was the detector's main error
-# source: one strike rings for a few hundred milliseconds, and every rebound
-# past the height threshold was counted as another step. Widening the gate
-# costs the fastest ~2% of real steps and removes far more double-counts than
-# it merges.
-_STEP_MIN_INTERVAL_S = 1.15  # cap cadence at ~52 steps/min
-# Detection height = mean + k * std of |acc|-1g over the whole recording.
-# Calibrated against ground-truth (dist_mm) step counts on real recordings.
+# Refractory period between strikes: caps cadence at ~52 steps/min, wide
+# enough to reject a strike's own ringing.
+_STEP_MIN_INTERVAL_S = 1.15
+# Detection height = mean + k * std of |acc|-1g, calibrated against dist_mm.
 _STEP_HEIGHT_SIGMA_K = 3.2
-# A strike also has to stand clear of its own surroundings by this fraction of
-# the detection height. Height alone accepts a rebound that never falls back to
-# the noise floor; prominence is what distinguishes one shock from its ringing.
+# Fraction of the detection height a strike must stand clear of its
+# surroundings by, to distinguish one shock from its own ringing.
 _STEP_PROMINENCE_FRAC = 0.5
-# Absolute floor, in g. A near-motionless recording has near-zero noise, so
-# std alone could let residual sensor noise get picked up as "steps". Real
-# strikes in this dataset peak at 0.59-1.31 g of deviation, while a motionless
-# recording peaks around 0.03 g, so a floor in between rejects the second
-# without ever binding on the first (it binds on 0 of the 45 scoreable
-# windows). The previous 0.02 g floor was low enough to report "steps" in a
-# recording with no motion at all.
+# Absolute floor in g, so a near-motionless recording (~0.03 g noise) can't
+# trigger on sensor noise; real strikes peak at 0.59-1.31 g.
 _MIN_HEIGHT_G = 0.30
 
-# Band thresholds for the distance sensor live in utils.io, because the
-# windowing preprocessor needs the same error floor; re-exported here so
-# existing callers keep importing them from this module.
+# Distance-sensor thresholds live in utils.io (shared with the windowing
+# preprocessor); re-exported here for existing callers.
 _DIST_MIN_INTERVAL_S = 0.25  # cap cadence at 240 steps/min
-# A swing's mid-flight sensor jitter can dip back into the resting band for
-# a sample or two before continuing up - a bare touch isn't enough evidence
-# the cane actually landed, so require it to stay there for a stretch
-# before re-arming (a real return-to-rest holds far longer than this).
+# Samples the reading must hold in the resting band before re-arming, so
+# mid-swing jitter can't pass for a return-to-rest.
 _DIST_REARM_HOLD_S = 0.1
 
 
@@ -85,18 +61,8 @@ class StepCountResult:
 
 
 def _detect_gt_steps(rec: ImuRecording) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Detect steps from the distance sensor.
-
-    The reading quantizes into three bands rather than behaving like a
-    clean waveform: 90-110 mm is resting noise (cane planted), a rise past
-    118 mm means the cane tip has actually moved away from the ground (a
-    step), and anything below 90 mm is a sensor measurement error. So a
-    step is each *rising* crossing of the 118 mm threshold, latched with
-    hysteresis - it can't fire again until the reading has come back down
-    and *stayed* in the resting band for a stretch (not just touched it,
-    which is often mid-swing sensor jitter rather than the cane landing) -
-    rather than a peak/trough search on a filtered signal, which is fragile
-    against this sensor's jitter.
+    """Detect steps as rising crossings of the tip-lift threshold, latched
+    with hysteresis until the reading holds in the resting band again.
     """
     dist = np.where(rec.dist_mm < DIST_ERROR_FLOOR_MM, DIST_ERROR_FLOOR_MM, rec.dist_mm)
     min_gap = max(1, int(_DIST_MIN_INTERVAL_S * rec.fs))

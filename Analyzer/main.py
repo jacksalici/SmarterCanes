@@ -43,18 +43,13 @@ from utils.io import group_sessions, load_csv, load_session, normal_paths, paths
 # Defaults live on StepAEConfig so the two commands cannot drift apart.
 _D = StepAEConfig()
 
-# The dataset lives alongside the Analyzer, not inside it: `Dataset/data` holds
-# every recording flat, and `Dataset/split.csv` says which of `train`, `test`
-# or `walk` each one belongs to.
+# See Dataset/README.md for the layout and the split.csv/description.csv format.
 DATASET_DIR = Path(__file__).resolve().parent.parent / "Dataset"
 DEFAULT_DATA_DIR = DATASET_DIR / "data"
 DEFAULT_SPLIT_CSV = DATASET_DIR / "split.csv"
 DEFAULT_DESCRIPTIONS_CSV = DATASET_DIR / "description.csv"
 
-# `normal` - every ann0/legacy recording, `train`/`test`/`walk`, `all` alike -
-# is the default pool for ordinary gait analysis: it is what the numbers in
-# `out/` were measured over, since `ae-anomaly` is the only command anomalous
-# recordings are meant to feed.
+# Default pool for step-count/step-accuracy/step-ae - what out/ was measured over.
 DEFAULT_SPLIT = "normal"
 
 
@@ -78,11 +73,8 @@ def _save_figure(fig, out_path: Path | str) -> None:
 def _sessions_in(path: Path, splits: str = DEFAULT_SPLIT) -> dict[str, list[Path]]:
     """Resolve a file-or-directory argument into sessions of segment paths.
 
-    When `path` is the dataset directory, `splits` narrows it: `normal`
-    (default) is every ann0/legacy recording, `train`/`test`/`walk` (or a
-    comma-separated mix) are the `Dataset/split.csv` labels, and `all` is the
-    whole pool including labelled anomalies. Any other directory is used
-    as-is, unfiltered.
+    `splits` (see `_paths_for_split_arg`) narrows a directory input, but only
+    when it is the dataset directory - any other directory is used as-is.
     """
     if not path.is_dir():
         return {path.stem: [path]}
@@ -419,11 +411,8 @@ def _cmd_step_ae(args: argparse.Namespace) -> None:
 
 
 def _sharpness_gain(windows) -> float:
-    """How much alignment concentrated the common pattern.
-
-    Ratio of the mean-signal energy after alignment to before: averaging
-    misaligned copies of the same pattern cancels it out, so a ratio above 1
-    means the windows now agree on where the pattern is.
+    """Ratio of mean-signal energy after alignment to before; >1 means the
+    windows now agree on where the pattern is.
     """
     import numpy as np
 
@@ -515,10 +504,8 @@ def _plot_step_ae(result, out_path: Path) -> None:
     _save_figure(fig, out_path)
 
 
-# Every ae-anomaly flag whose default is meant to be the StepAEConfig field of
-# the same name. Checked rather than trusted: a hardcoded argparse default that
-# silently overrides the dataclass is invisible in a diff and shows up only as
-# results that do not match the configuration they claim to use.
+# ae-anomaly flags whose default must track the StepAEConfig field of the
+# same name, checked below rather than trusted.
 _SHARED_DEFAULTS = (
     "window_s", "target_fs", "max_lag_s", "align_iters", "anchor", "hop_s",
     "align_mode", "model", "kernel_size", "latent", "epochs", "batch_size",

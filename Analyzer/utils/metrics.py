@@ -1,11 +1,7 @@
-"""Binary-classification metrics for anomaly scoring.
+"""Binary-classification metrics for anomaly scoring, over numpy.
 
-Implemented over numpy rather than pulled in from scikit-learn: the project
-depends on numpy/scipy/torch already, and these are the only four curves and
-handful of counts the evaluation needs.
-
-The scores here are anomaly scores - higher means more anomalous - so a
-positive (anomalous) window is one whose score exceeds the threshold.
+Scores are anomaly scores - higher means more anomalous - so a positive
+window is one whose score exceeds the threshold.
 """
 
 from __future__ import annotations
@@ -71,9 +67,8 @@ def threshold_metrics(y_true: np.ndarray, scores: np.ndarray, threshold: float) 
 def roc_curve(y_true: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """False-positive and true-positive rates over every distinct threshold.
 
-    Ties are handled by stepping through *groups* of equal scores at once,
-    which is what keeps a detector that assigns many windows the same score
-    from being credited with an ordering it never produced.
+    Steps through groups of equal scores at once, so ties aren't credited
+    with an ordering they don't have.
     """
     order = np.argsort(-scores, kind="mergesort")
     y = y_true[order].astype(bool)
@@ -84,7 +79,6 @@ def roc_curve(y_true: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.nd
     if n_pos == 0 or n_neg == 0:
         return np.array([0.0, 1.0]), np.array([0.0, 1.0])
 
-    # Last index of each run of equal scores: the thresholds we can actually set.
     distinct = np.flatnonzero(np.diff(s)) if s.size > 1 else np.array([], dtype=int)
     ends = np.r_[distinct, s.size - 1]
 
@@ -122,12 +116,8 @@ def pr_curve(y_true: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, np.nda
 
 
 def average_precision(y_true: np.ndarray, scores: np.ndarray) -> float:
-    """AUPRC as the step-wise average precision.
-
-    Summing precision weighted by the *increase* in recall, rather than
-    trapezoidal integration: interpolating between operating points on a PR
-    curve credits thresholds that do not exist, and overstates the area for a
-    detector with few positives - which is exactly the regime here.
+    """AUPRC as the step-wise average precision (not trapezoidal - that would
+    interpolate between operating points that don't exist).
     """
     recall, precision = pr_curve(y_true, scores)
     if int(np.sum(y_true)) == 0:
@@ -136,15 +126,10 @@ def average_precision(y_true: np.ndarray, scores: np.ndarray) -> float:
 
 
 def best_f1(y_true: np.ndarray, scores: np.ndarray) -> ThresholdMetrics:
-    """The threshold maximizing F1, as an oracle upper bound.
-
-    This peeks at the test labels, so it is not an achievable operating point
-    - it is reported to separate "the score does not separate the classes"
-    from "the score separates them but the calibrated threshold sits in the
-    wrong place".
+    """The threshold maximizing F1 - an oracle upper bound, since it peeks
+    at the test labels.
     """
     candidates = np.unique(scores)
-    # Midpoints, plus one below everything, so every partition is reachable.
     cuts = np.r_[candidates[0] - 1e-12, (candidates[:-1] + candidates[1:]) / 2, candidates[-1]]
     best = max((threshold_metrics(y_true, scores, c) for c in cuts), key=lambda m: m.f1)
     return best

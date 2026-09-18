@@ -1,14 +1,7 @@
 """Outputs for the `ae-anomaly` experiment: CSV tables and plots.
 
-Kept apart from `ae_anomaly.py` so the evaluation itself stays free of
-formatting concerns, and apart from `main.py` because there is rather more of
-it than the other experiments' plotting.
-
-Every figure is written twice, as PNG and as PDF: the raster copy for quick
-viewing, the vector copy for anything that gets printed or projected. Numbers
-are written as CSV only - there is deliberately no generated prose, so the
-written-up interpretation in RESULTS.md is the only place a claim is made about
-what these outputs mean.
+Every figure is written as both PNG and PDF. No generated prose - RESULTS.md
+is the only place a claim is made about what these numbers mean.
 """
 
 from __future__ import annotations
@@ -32,9 +25,8 @@ def _save(fig, out_path: Path, dpi: int = 150) -> None:
 _NORMAL_COLOR = "tab:blue"
 _ANOMALY_COLOR = "tab:red"
 
-# Reds for the anomaly types, in the order they appear in description.csv.
-# Spread over hue and lightness rather than a single-hue ramp: with transparency
-# on, neighbouring steps of one hue become impossible to tell apart.
+# Reds for the anomaly types, spread over hue and lightness (not a single-hue
+# ramp) so neighbouring types stay distinguishable under transparency.
 _ANOMALY_SHADES = (
     "#FFA05C",  # apricot
     "#F2542D",  # vermilion
@@ -54,20 +46,8 @@ def _anomaly_palette(n: int) -> list[str]:
 
 
 def _log_ticks(ax, axis: str = "x") -> None:
-    """Label a log axis with plain numbers at 1-2-5 steps, plus minor tick marks.
-
-    Matplotlib's default on a log axis is a power-of-ten label every decade,
-    which over the two decades these errors span gives two or three labels and
-    no sense of scale in between. Ticking at 1, 2, 5 per decade and printing
-    them as ordinary numbers ("0.5", "2", "20") keeps the axis readable, and
-    the unlabelled minor ticks carry the spacing that tells a reader the scale
-    is logarithmic.
-
-    On an axis spanning less than a decade - several of the per-session trace
-    panels - `LogLocator` falls back to evenly spaced ticks of its own, so the
-    labels come out as 1.5, 2, 2.5 rather than 1, 2, 5. That is the right
-    behaviour for such a range and is left alone; the formatter still prints
-    them as plain numbers.
+    """Label a log axis with plain numbers at 1-2-5 steps, plus minor ticks -
+    denser than matplotlib's default one-label-per-decade.
     """
     from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 
@@ -83,20 +63,10 @@ def _log_ticks(ax, axis: str = "x") -> None:
 def _threshold_divider(
     ax, threshold: float, axis: str = "x", fontsize: float = 11, inside: bool = False
 ) -> None:
-    """Draw the decision threshold and name the verdict on each side of it.
-
-    The line alone says where the cut is but not which way it points, and on a
-    reconstruction-error axis that is the one thing a reader cannot infer from
-    the picture. Naming both sides turns the figure from a pair of
-    distributions into a statement about a decision.
-
-    Drawn solid and heavier than anything else on the axes, deliberately: these
-    figures already use dashed lines for per-type medians, and a dashed
-    threshold reads as one more median rather than as the boundary everything
-    else is being judged against.
-
-    `inside` puts the labels just below the top of the axes instead of above
-    it, for panels whose top edge already carries a title.
+    """Draw the decision threshold, labelled "anomaly"/"not anomaly" on each
+    side - solid and heavier than any other line, so it doesn't read as one
+    more dashed median. `inside` puts the labels below the top axis edge,
+    for panels whose top already carries a title.
     """
     label_kw = dict(fontsize=fontsize, fontweight="semibold", zorder=7)
     if axis == "x":
@@ -131,11 +101,8 @@ def _merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
 def unlabelled_flagged_runs(
     result: AEAnomalyResult, session_id: str
 ) -> list[tuple[float, float, float]]:
-    """Contiguous stretches of an unlabelled region that scored above threshold.
-
-    For the `ann-1` recording this is the interesting part: windows excluded
-    from every metric because nothing marks them, which the detector fired on
-    anyway. Returns (start_s, end_s, peak_score) per run.
+    """Contiguous stretches of an unlabelled (`ann-1`) region that scored
+    above threshold. Returns (start_s, end_s, peak_score) per run.
     """
     w_set = result.test_windows
     mask = (w_set.session_ids == session_id) & (result.labels == LABEL_DROP)
@@ -336,12 +303,7 @@ def plot_sessions(result: AEAnomalyResult, out_path: Path) -> None:
 
 
 def plot_traces(result: AEAnomalyResult, out_path: Path) -> None:
-    """Anomaly score against time for every test session.
-
-    This is where a session-level number stops hiding things: a recording can
-    sit just under the threshold throughout, or spike once and subside, and
-    those are different failures.
-    """
+    """Anomaly score against time for every test session."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -367,10 +329,8 @@ def plot_traces(result: AEAnomalyResult, out_path: Path) -> None:
         ax.plot(t, sc, linewidth=0.9, color=color)
         flagged = sc > result.threshold
         ax.plot(t[flagged], sc[flagged], "o", markersize=2.5, color="black")
-        # Unlabelled stretches (an ann-1 recording away from its marker) are
-        # scored but excluded from every metric - shade them so the plot says
-        # so. Spans are merged first: windows overlap, so drawing one per
-        # window would stack alpha into a gradient that means nothing.
+        # Shade unlabelled (scored but excluded) stretches; spans merged
+        # first since overlapping windows would otherwise stack alpha.
         for lo, hi in _merge_spans(
             [(t[i] - w_set.window_s / 2, t[i] + w_set.window_s / 2)
              for i in np.flatnonzero(labels == LABEL_DROP)]
@@ -379,8 +339,7 @@ def plot_traces(result: AEAnomalyResult, out_path: Path) -> None:
         ax.set_yscale("log")
         _log_ticks(ax, "y")
         ax.tick_params(axis="y", which="major", labelsize=7)
-        if y_index == 0:
-            # Named once rather than on all twelve panels, where it would be noise.
+        if y_index == 0:  # named once, not on every panel
             _threshold_divider(ax, result.threshold, "y", fontsize=7, inside=True)
         else:
             ax.axhline(result.threshold, color="black", linewidth=1.4, zorder=6)
@@ -409,16 +368,10 @@ def plot_traces(result: AEAnomalyResult, out_path: Path) -> None:
 def group_scores_by_type(
     result: AEAnomalyResult,
 ) -> tuple[np.ndarray, list[tuple[str, np.ndarray, int]]]:
-    """Split the scoreable test windows into normal, then one group per anomaly type.
+    """Split scoreable test windows into normal, then one group per anomaly
+    type (from `description.csv`, pooling sessions of the same type).
 
-    Grouping is by the description text from `description.csv` rather than by
-    recording, because the interesting question is what *kind* of abnormal gait
-    the score separates - four sessions of "tremors and short steps" behave as
-    one population, and pooling them says more than four small histograms.
-
-    Returns (normal_scores, [(anomaly type, scores, n_sessions), ...]) with the
-    types in recording order, which is also the order they appear in
-    `description.csv`.
+    Returns (normal_scores, [(anomaly type, scores, n_sessions), ...]).
     """
     w = result.test_windows
     scoreable = result.labels != LABEL_DROP
@@ -443,24 +396,10 @@ def group_scores_by_type(
 
 
 def plot_error_histogram(result: AEAnomalyResult, out_path: Path) -> None:
-    """Reconstruction error by anomaly type: normal in blue, each type its own red.
-
-    Kept spare - no title and no y axis - so the figure can be dropped into a
-    paper or slide that supplies its own caption. What it does carry is the two
-    things a reader cannot reconstruct from the shapes alone: a labelled
-    logarithmic error scale, and the decision threshold with the verdict named
-    on each side. Written as both PNG and PDF, the PDF being the one to embed.
-    The dashed vertical line in each colour is that type's median.
-
-    Overlaid with transparency rather than stacked: stacking answers "how many
-    windows in this bin", but the question here is where each *type* sits
-    relative to normal gait, and that comparison needs the distributions drawn
-    over one another. Each is given a solid outline at full opacity so a type
-    stays traceable where three or four of them overlap.
-
-    The reds are spread across hue as well as lightness - apricot through
-    vermilion and crimson to near-black wine - because a single-hue ramp leaves
-    adjacent types indistinguishable once they are washed out by alpha.
+    """Reconstruction error by anomaly type: normal in blue, each type its own
+    red, overlaid with transparency (not stacked) plus a solid outline and a
+    dashed median line per type. Kept spare - no title, no y axis - so it can
+    drop into a paper or slide with its own caption.
     """
     import matplotlib
 
@@ -480,13 +419,10 @@ def plot_error_histogram(result: AEAnomalyResult, out_path: Path) -> None:
     ]
     for name, scores, color in series:
         ax.hist(scores, bins=bins, color=color, alpha=0.45, zorder=2)
-        # Full-opacity outline, so an overlapped distribution stays readable.
         ax.hist(
             scores, bins=bins, histtype="step", color=color, linewidth=1.6, zorder=3,
             label=name,
         )
-        # Median per type, so two distributions can be placed against each
-        # other even where their bodies overlap.
         ax.axvline(
             np.median(scores), color=color, linestyle=(0, (4, 2)), linewidth=2.0, zorder=4
         )
@@ -495,9 +431,7 @@ def plot_error_histogram(result: AEAnomalyResult, out_path: Path) -> None:
     _log_ticks(ax, "x")
     ax.set_xlabel("reconstruction error", fontsize=12)
 
-    # Headroom for the threshold's side labels, and a legend dropped clear of
-    # them rather than fighting for the same corner.
-    ax.set_ylim(0, ax.get_ylim()[1] * 1.08)
+    ax.set_ylim(0, ax.get_ylim()[1] * 1.08)  # headroom for the threshold labels
     _threshold_divider(ax, result.threshold, "x", fontsize=12)
 
     ax.tick_params(axis="y", which="both", labelleft=False, length=0)
@@ -512,7 +446,7 @@ def plot_error_histogram(result: AEAnomalyResult, out_path: Path) -> None:
 
 
 def plot_examples(result: AEAnomalyResult, out_path: Path) -> None:
-    """What the model reconstructs well and badly, and which channels give it away."""
+    """Best/worst-reconstructed normal and anomalous windows, with per-channel error."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -569,11 +503,8 @@ def plot_examples(result: AEAnomalyResult, out_path: Path) -> None:
 def write_metrics_csv(result: AEAnomalyResult, out_path: Path) -> None:
     """The headline numbers and the operating-point sweep, as one flat table.
 
-    Replaces the prose report: the same measurements, in the one format that
-    can be re-read without a human having to trust a sentence. Two blocks -
-    `headline` rows are single values at the calibrated threshold, `operating
-    point` rows sweep the false-alarm budget so the cost of that choice is
-    visible. Every budget row is reachable without consulting a test label.
+    `headline` rows are single values at the calibrated threshold; `operating
+    point` rows sweep the false-alarm budget.
     """
     m, o = result.window_metrics, result.oracle_metrics
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -612,13 +543,9 @@ def write_metrics_csv(result: AEAnomalyResult, out_path: Path) -> None:
 
 
 def write_unlabelled_runs_csv(result: AEAnomalyResult, out_path: Path) -> None:
-    """Flagged stretches inside the `ann-1` recording's *unlabelled* span.
-
-    These windows are scored but excluded from every metric, because nothing in
-    the recording says where its abnormal stretch ends. They are written out
-    rather than dropped because what the detector does there is the one piece of
-    evidence about whether that recording holds more than the single clicked
-    moment - and it cannot be settled from the labels either way.
+    """Flagged stretches inside an `ann-1` recording's unlabelled span -
+    scored but excluded from every metric, since nothing marks where the
+    abnormal stretch ends.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", newline="") as f:

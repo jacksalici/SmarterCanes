@@ -16,21 +16,14 @@ _MDPS_PER_DPS = 1000.0
 
 # Columns every recording has, in firmware write order.
 _REQUIRED_COLUMNS = ("t_ms", "ax_mg", "ay_mg", "az_mg", "gx_mdps", "gy_mdps", "gz_mdps")
-# Columns added by later firmware revisions. They are resolved by *name*, not
-# position, so a recording may carry either, both or neither: `dist_mm` is the
-# cane base to ground distance, `event` marks the first sample after a single
-# click during recording (a user-flagged moment of interest).
+# Optional columns, resolved by name rather than position: `dist_mm` is the
+# cane base-to-ground distance, `event` marks a user click during recording.
 _DIST_COLUMN = "dist_mm"
 _EVENT_COLUMN = "event"
 
-# Bands of the Modulino Distance sensor reading, in millimetres. The reading
-# is between the cane base and the ground and quantizes into three bands rather
-# than behaving like a clean waveform: 90-110 mm is the resting/noise band
-# (cane planted, sensor jitter only), above 118 mm the tip has actually lifted
-# away from the ground, and below 90 mm is a measurement error rather than a
-# real reading. Empirical calibration values for this sensor and mounting.
-# They live here rather than in a single experiment because both the step
-# detector and the windowing preprocessor have to know where the error floor is.
+# Bands of the Modulino Distance reading, in mm: 90-110 resting (cane
+# planted), >118 tip lifted, <90 sensor error. Live here since both the step
+# detector and the windowing preprocessor need the error floor.
 DIST_ERROR_FLOOR_MM = 90.0
 DIST_REST_HIGH_MM = 110.0
 DIST_STEP_THRESHOLD_MM = 118.0
@@ -73,11 +66,8 @@ class ImuRecording:
 
 
 def parse_ann(path: str | Path) -> int | None:
-    """Read the stop annotation encoded in a recording's filename.
-
-    Every segment of a session carries the same `_annY` suffix, so the label
-    can be recovered from any one of its files. Returns None for the legacy
-    filenames that have no annotation.
+    """Read the `_annY` stop annotation from a recording's filename, or
+    `None` for a legacy filename that has none.
     """
     m = _SESSION_FILENAME_RE.match(Path(path).stem)
     if not m or m.group("ann") is None:
@@ -86,11 +76,8 @@ def parse_ann(path: str | Path) -> int | None:
 
 
 def _read_rows(path: Path, n_columns: int) -> np.ndarray:
-    """Parse the CSV, skipping rows corrupted by serial-logging glitches.
-
-    Real recordings occasionally contain truncated or garbled lines (dropped
-    bytes on the serial link), so rows that don't have exactly `n_columns`
-    numeric fields are dropped rather than failing the whole load.
+    """Parse the CSV, dropping rows with other than `n_columns` numeric
+    fields (serial-logging glitches) rather than failing the whole load.
     """
     rows = []
     n_skipped = 0
@@ -115,12 +102,7 @@ def _read_rows(path: Path, n_columns: int) -> np.ndarray:
 
 
 def _column_indices(path: Path, header: list[str]) -> dict[str, int]:
-    """Map column name to column index, validating the required columns.
-
-    Resolving by name (rather than the fixed positions the firmware happens
-    to write) is what lets one loader read every schema revision: columns
-    appended by newer firmware simply show up in the map.
-    """
+    """Map column name to column index, validating the required columns."""
     indices = {name.strip(): i for i, name in enumerate(header)}
     missing = [name for name in _REQUIRED_COLUMNS if name not in indices]
     if missing:
@@ -168,26 +150,14 @@ def load_csv(path: str | Path) -> ImuRecording:
 
 
 def has_dist_column(path: str | Path) -> bool:
-    """Whether a recording carries `dist_mm`, read from the header alone.
-
-    Only the first line is parsed, so this is cheap enough to run over a whole
-    directory before deciding whether the distance channel is available - which
-    is what lets `--with-dist` default to "use it when every recording has it"
-    rather than failing on the older firmware revisions that predate the sensor.
-    """
+    """Whether a recording carries `dist_mm`, from the header line alone."""
     with open(path, newline="", encoding="utf-8", errors="replace") as f:
         header = next(csv.reader(f))
     return _DIST_COLUMN in {name.strip() for name in header}
 
 
 def load_split(path: str | Path) -> dict[str, str]:
-    """Read the `filename,split` table that assigns each recording to
-    `train`, `test` or `walk`.
-
-    `train` is the normal-only pool `ae-anomaly` fits on; `test` is the
-    labelled pool it evaluates against, normal and anomalous alike; `walk` is
-    the rest - ordinary walking that plays no part in that protocol.
-    """
+    """Read the `filename,split` table (see `Dataset/README.md`)."""
     path = Path(path)
     split: dict[str, str] = {}
     with open(path, newline="", encoding="utf-8") as f:
@@ -207,28 +177,15 @@ def paths_for_split(data_dir: str | Path, split_csv: str | Path, splits: set[str
 
 
 def normal_paths(data_dir: str | Path) -> list[Path]:
-    """List every `ann0` (or legacy, un-annotated) recording in `data_dir`.
-
-    This is the pool ordinary gait analysis - `step-count`, `step-accuracy`,
-    `step-ae` - runs over by default: every recording not carrying an
-    annotated abnormal stretch, `train` and `walk` alike, plus any `test`
-    recording (such as the held-out normal control session) that happens to
-    be `ann0` too. `ann1`/`ann-1` recordings are deliberately excluded - they
-    exist to be scored by `ae-anomaly`, not averaged into a step-count report.
+    """List every `ann0` (or legacy, un-annotated) recording in `data_dir` -
+    the default pool for ordinary gait analysis (see `Dataset/README.md`).
     """
     data_dir = Path(data_dir)
     return sorted(p for p in data_dir.glob("*.csv") if parse_ann(p) in (None, 0))
 
 
 def group_sessions(paths: list[Path]) -> dict[str, list[Path]]:
-    """Group recording files by session, in segment order.
-
-    Newer firmware splits a session into 30-second segment files
-    (`rec_XXXXX_segNNN...`) instead of one continuous one, so a session's
-    data has to be read back as the concatenation of its segments, in
-    order. A legacy single-file session (`rec_XXXXX_annY.csv`, no `_seg`)
-    just forms a group of one.
-    """
+    """Group recording files by session, in segment order."""
     groups: dict[str, list[Path]] = {}
     for path in paths:
         m = _SESSION_FILENAME_RE.match(path.stem)
@@ -250,10 +207,8 @@ def group_sessions(paths: list[Path]) -> dict[str, list[Path]]:
 def load_session(paths: list[Path]) -> ImuRecording:
     """Load a session's segment file(s) as one continuous recording.
 
-    `paths` must be a single session's segments, already in order (as
-    `group_sessions` produces). Each segment's `t_ms` restarts from 0, so
-    segments are stitched back-to-back by offsetting each one to start right
-    after the previous segment ends.
+    `paths` must be a single session's segments, in order (as
+    `group_sessions` produces).
     """
     if len(paths) == 1:
         return load_csv(paths[0])
@@ -271,8 +226,7 @@ def load_session(paths: list[Path]) -> ImuRecording:
     acc = np.concatenate([seg.acc for seg in segments])
     gyro = np.concatenate([seg.gyro for seg in segments])
 
-    # An optional column is only usable for the session as a whole if every
-    # segment carries it - a half-populated array would silently misalign.
+    # Only usable session-wide if every segment carries it.
     dist_mm = None
     if all(seg.has_dist for seg in segments):
         dist_mm = np.concatenate([seg.dist_mm for seg in segments])

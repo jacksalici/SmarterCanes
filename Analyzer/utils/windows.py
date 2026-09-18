@@ -1,31 +1,7 @@
-"""Windowing preprocessing for window-based experiments.
+"""Windowing preprocessing: resample -> cut -> align -> normalize.
 
-The pipeline here turns a set of recordings into a tensor of comparable
-windows, in four stages:
-
-1. Resample onto a uniform time base. The firmware's sample interval jitters
-   (the median rate across `data/` is ~67 Hz against a nominal 100 Hz), so a
-   window length in seconds would otherwise map to a different number of
-   samples in every recording.
-2. Cut windows spanning several steps, anchored either on each detected step
-   or on a fixed time grid (`anchor="slide"`). Step anchoring phase-locks the
-   windows for free but ties how much evidence a recording yields to a step
-   detector that degrades on abnormal gait; sliding gives every recording the
-   same coverage per second regardless of what the gait looks like.
-3. Place each window in a common phase, by one of four policies (see
-   `align_windows`): leave it alone, correlate it against a template of normal
-   gait, centre the nearest detected step, or - the default - centre the step
-   where one was detected and correlate only where none was. Phase jitter is
-   worth removing because a downstream model would otherwise spend capacity
-   modelling it as if it were signal; the reason the policy matters is that
-   correlating against a *normal* template lets an anomalous window search for
-   the shift that looks most normal, which is a favour done to exactly the
-   windows that should score badly.
-4. Z-score each channel using statistics fitted on the training windows only.
-
-Both the template and the normalization statistics are *fitted* on normal
-training data and then applied frozen, so nothing about the held-out windows
-leaks into the preprocessing.
+Template and normalization statistics are fitted on normal training data and
+applied frozen.
 """
 
 from __future__ import annotations
@@ -37,15 +13,12 @@ from scipy.signal import correlate
 
 from utils.io import DIST_ERROR_FLOOR_MM
 
-# Channels fed to a model. dist_mm is deliberately not here by default: it is
-# the ground-truth sensor for step detection, so including it would leak the
-# signal a model is meant to be independent of. Callers opt in explicitly.
+# dist_mm excluded by default: it is step detection's ground truth, so callers
+# opt in explicitly rather than leak it into the model.
 IMU_CHANNELS = ("ax", "ay", "az", "gx", "gy", "gz", "acc_mag")
 DIST_CHANNEL = "dist_mm"
 
-# Channel used to estimate the alignment lag: acceleration magnitude, which is
-# orientation-independent (the cane is not held at a repeatable angle) and is
-# where the tip strike shows up most sharply.
+# Orientation-independent, and where the tip strike is sharpest.
 _ALIGN_CHANNEL = "acc_mag"
 
 
@@ -112,10 +85,8 @@ def to_uniform(
 ) -> UniformSeries:
     """Resample a recording onto a uniform `target_fs` grid.
 
-    `step_times` are the anchor times in seconds (from a step detector, run on
-    the original samples); they are mapped onto the new grid by nearest
-    sample. Event markers are mapped the same way rather than interpolated -
-    they are impulses, and interpolation would smear or erase them.
+    `step_times` and event markers are mapped onto the new grid by nearest
+    sample rather than interpolated, since they are impulses.
     """
     channels = list(IMU_CHANNELS)
     if with_dist:
@@ -136,12 +107,6 @@ def to_uniform(
         "acc_mag": rec.acc_mag,
     }
     if with_dist:
-        # Readings below the sensor's error floor are measurement failures, not
-        # a tip 9 mm off the ground. They matter here because they are not
-        # evenly spread: they cluster in the fall and long-step recordings,
-        # where the tip leaves the sensor's usable range. Left raw, the model
-        # would partly be detecting sensor dropout rather than gait, so the
-        # floor is clamped exactly as the step detector clamps it.
         raw[DIST_CHANNEL] = np.maximum(rec.dist_mm, DIST_ERROR_FLOOR_MM)
 
     data = np.vstack([np.interp(t_new, rec.t, raw[c]) for c in channels])
@@ -182,27 +147,9 @@ def extract_anchors(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pick the anchor (series, center) pairs that yield a full window.
 
-    Two anchoring schemes:
-
-    - `"step"` centers a window on every `step_hop`-th *detected* step. It
-      yields phase-locked windows for free, but it makes the amount of
-      evidence collected from a recording depend on a step detector - and
-      both detectors available here (the acceleration one and the `dist_mm`
-      one) degrade on exactly the abnormal gait this is meant to catch. A
-      shuffled or dragged step never lifts the tip past the distance
-      threshold and never produces a clean shock, so an anomalous recording
-      can yield almost no windows and effectively escape scoring.
-
-    - `"slide"` centers a window every `hop` samples regardless of content.
-      Coverage is then uniform in time and identical for normal and
-      anomalous recordings, which is what makes the per-window scores
-      comparable across classes. Phase is no longer free, so it has to come
-      from alignment or from a shift-tolerant model.
-
-    A window is kept only if it fits inside its recording *with `max_lag`
-    samples of slack on both sides*, so alignment can later shift it by any
-    lag in range and still re-slice real samples - no zero padding, and no
-    window that changes length depending on how far it moved.
+    `"step"` centers on every `step_hop`-th detected step; `"slide"` centers
+    every `hop` samples regardless of content. Kept only if the window fits
+    with `max_lag` samples of slack on both sides, for later alignment.
     """
     half = window_len // 2
     series_i = []
@@ -212,7 +159,6 @@ def extract_anchors(
         if anchor == "step":
             candidates = series.step_idx[::step_hop]
         elif anchor == "slide":
-            # Centers for which the padded slice stays inside the recording.
             lo = half + max_lag
             hi = length - max_lag - window_len + half
             candidates = np.arange(lo, hi + 1, max(1, hop)) if hi >= lo else np.empty(0, dtype=int)
@@ -255,14 +201,7 @@ def _best_lag(
     max_lag: int,
     template: np.ndarray,
 ) -> int:
-    """Lag in [-max_lag, max_lag] maximizing normalized cross-correlation.
-
-    The correlation is computed with a single `correlate(..., mode="valid")`
-    over an extended slice - i.e. sliding the template over the signal as a
-    matched filter - which gives the numerator for every candidate lag at
-    once. Each is then divided by the norm of the sub-window it came from, so
-    a lag isn't preferred merely because the signal is louder there.
-    """
+    """Lag in [-max_lag, max_lag] maximizing normalized cross-correlation."""
     ext = _align_signal(series, center, window_len, pad=max_lag)
     num = correlate(ext, template, mode="valid")  # length 2*max_lag + 1
 
@@ -282,15 +221,8 @@ def _best_lag(
 
 
 def _step_lag(series: UniformSeries, center: int, max_lag: int) -> int | None:
-    """Lag bringing the nearest detected step onto the window center.
-
-    This is the phase convention step anchoring produces for free - the anchor
-    step sits at the center - so applying it to a sliding window puts that
-    window into the same convention the step-anchored training windows use.
-
-    Returns None when no detected step lies within `max_lag` of the center,
-    which is the signal to fall back to something that does not need a step
-    detector.
+    """Lag bringing the nearest detected step onto the window center, or
+    `None` if no detected step lies within `max_lag`.
     """
     if series.step_idx.size == 0:
         return None
@@ -317,32 +249,9 @@ def align_windows(
       the alignment channel (mean-removed `|acc|`).
     - `"step"` brings the nearest detected step onto the window center.
     - `"mixed"` uses the step lag where a step is available and falls back to
-      `"xcorr"` where none is, which is the policy this project settled on.
+      `"xcorr"` where none is.
 
-    Why `"mixed"` rather than `"xcorr"` everywhere: cross-correlation picks the
-    shift that makes a window look *most like normal gait*, because the
-    template is built from normal gait. For an anomalous window that is a
-    search for the most innocent-looking pose, and it shrinks the
-    reconstruction error the anomaly score is made of. A step lag has no such
-    bias - it is placement, not matching, and the step detector never sees the
-    template. So the step branch is preferred wherever the evidence for it
-    exists, and the correlation branch only covers windows where no step was
-    detected at all - which on normal gait is almost none, and on abnormal gait
-    is exactly the windows where the gait has stopped looking like stepping.
-
-    Returns (lags, template, source), where `source` records which branch
-    produced each lag so the split can be reported.
-
-    The template is refined iteratively on the `fit_mask` windows only: start
-    from their mean alignment signal at the raw anchors, re-estimate every
-    lag against it, rebuild the template from the shifted windows, repeat.
-    Iteration is what breaks the chicken-and-egg between "where is the
-    pattern" and "where is each window relative to it"; it converges in a
-    couple of passes because step anchoring already puts windows within a
-    fraction of a cycle of each other. Pass a `template` to skip fitting and
-    align against a frozen one (as when scoring with a saved model).
-
-    Returns (lags, template).
+    Returns (lags, template, source).
     """
     if mode not in ("none", "xcorr", "step", "mixed"):
         raise ValueError(f"unknown alignment mode: {mode!r}")
@@ -357,8 +266,6 @@ def align_windows(
     lags = np.zeros(centers.size, dtype=int)
     source = np.full(centers.size, "none", dtype=object)
 
-    # Step lags first: they are deterministic, need no template, and are what
-    # the template is then built from under "step" and "mixed".
     step_lags: dict[int, int] = {}
     if mode in ("step", "mixed"):
         for i in range(centers.size):
@@ -373,9 +280,6 @@ def align_windows(
 
     if template is None:
         if mode in ("step", "mixed") and any(i in step_lags for i in fit_idx):
-            # Build the template from step-aligned fit windows. No iteration is
-            # needed: unlike correlation lags, step lags do not depend on the
-            # template, so there is no chicken-and-egg to break.
             template = np.mean(
                 [_unit(signal_at(i, step_lags[i])) for i in fit_idx if i in step_lags], axis=0
             )
@@ -397,13 +301,11 @@ def align_windows(
                 if shift < 1.0:
                     break
 
-    # Final pass over every window (fit or held out) against the frozen template.
     for i in range(centers.size):
         if mode in ("step", "mixed") and i in step_lags:
             lags[i] = step_lags[i]
             source[i] = "step"
         elif mode == "step":
-            # No step and no fallback requested: leave the window where it is.
             lags[i] = 0
             source[i] = "none"
         else:
@@ -416,12 +318,7 @@ def align_windows(
 
 
 def fit_norm_stats(x: np.ndarray) -> NormStats:
-    """Per-channel mean/std over a window tensor of shape (n, C, L).
-
-    Statistics are global over the training windows rather than per-window:
-    normalizing each window on its own would erase amplitude differences,
-    which for anomaly detection are exactly the thing worth noticing.
-    """
+    """Per-channel mean/std over a window tensor of shape (n, C, L)."""
     mean = x.mean(axis=(0, 2))
     std = x.std(axis=(0, 2))
     std = np.where(std > 0, std, 1.0)
@@ -448,25 +345,16 @@ def build_window_set(
     """Run the whole pipeline: cut, align, mark normal/held-out, normalize.
 
     `normal_mask_fn(series, center, window_len)` decides whether a window
-    counts as normal training data; it defaults to all-normal. `template` and
+    counts as normal training data; defaults to all-normal. `template` and
     `norm` may be supplied to reuse a fitted preprocessing state instead of
-    refitting (scoring with a saved model).
-
-    `anchor` picks the windowing scheme (see `extract_anchors`); `hop_s` is
-    the spacing between sliding windows, in seconds.
-
-    `align_mode` picks the phase policy (see `align_windows`): `"none"`,
-    `"xcorr"`, `"step"`, or `"mixed"` - step placement where a step was
-    detected, correlation only as a fallback where none was.
+    refitting.
     """
     if not series_list:
         raise ValueError("no recordings to window")
 
     fs = series_list[0].fs
     window_len = int(round(window_s * fs))
-    # With alignment off there is no lag to reserve slack for, so windows may
-    # run right up to the edges of the recording. Every other mode shifts by up
-    # to max_lag, so that much signal has to exist on both sides.
+    # No lag to reserve slack for when alignment is off.
     max_lag = int(round(max_lag_s * fs)) if align_mode != "none" else 0
     hop = max(1, int(round(hop_s * fs)))
 
@@ -496,9 +384,6 @@ def build_window_set(
         ]
     )
 
-    # The template is fitted on normal windows only - unless there are none,
-    # in which case every window is a candidate and there is nothing to hold
-    # back anyway.
     fit_mask = is_normal if is_normal.any() else np.ones_like(is_normal)
     lags, template, align_source = align_windows(
         series_list,

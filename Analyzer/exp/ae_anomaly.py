@@ -1,42 +1,23 @@
 """Experiment 3: evaluate the autoencoder as an anomaly detector, train vs test.
 
-`step-ae` trains and scores one pool of recordings. This runs the protocol an
-actual detector has to survive: fit everything - alignment template,
-normalization statistics, weights, decision threshold - on the `train` split
-of `Dataset/split.csv`, which is normal gait only, then score the `test`
-split without refitting anything, and measure against labels the model never
-saw.
+Fits everything - alignment template, normalization statistics, weights,
+decision threshold - on the `train` split (normal gait only), then scores the
+`test` split without refitting anything.
 
-Labels come from the filename annotation, with one exception:
+Labels come from the filename annotation:
 
 - `ann0`  normal, every window is a negative
-- `ann1`  the whole recording is abnormal gait, every window is a positive
-- `ann-1` a normal recording containing at least one abnormal moment, marked
-          by the in-recording `event` click. Only windows overlapping a marker
-          are positives; the rest are *dropped* rather than called normal,
-          because nothing says where the abnormal stretch ends.
+- `ann1`  abnormal throughout, every window is a positive
+- `ann-1` normal except at least one marked moment (the in-recording `event`
+          click); only windows overlapping a marker are positives, the rest
+          are dropped rather than called normal
 
-Two failure modes of the original pipeline are worth stating, since the
-protocol here is built around them.
-
-The first is windowing. Anchoring a window on each detected step makes the
-amount of evidence gathered from a recording depend on a step detector, and
-every step detector available here degrades on abnormal gait - a shuffled or
-dragged step produces neither a clean acceleration shock nor a tip lift past
-the `dist_mm` threshold. How badly that bites depends on how the detector is
-tuned, which is the deeper objection: the size of the test set becomes a
-function of a threshold nobody set with evaluation in mind. On the current
-tuning, step anchoring yields 4-16 windows from each abnormal recording
-against 109 from the normal rec_00017, and 196 labelled windows in total
-against 290 for sliding anchors. Sliding windows on a fixed time grid
-(`anchor="slide"`) give every recording the same coverage per second, whatever
-the gait looks like and however the detector is tuned.
-
-The second is the alignment stage. Cross-correlating each window against the
-*normal* template and keeping the best-matching shift lets an abnormal window
-search for the pose that looks most normal, shrinking the reconstruction error
-the score is made of. A convolutional autoencoder is shift-tolerant by
-construction, so it can take unaligned windows and leave that error intact.
+Default windowing is `anchor="slide"` (a fixed time grid) rather than one
+window per detected step, since every step detector here degrades on
+abnormal gait and would otherwise decide how much evidence a recording
+yields. Default alignment avoids correlating against the normal template,
+since that lets an abnormal window search for the shift that looks most
+normal and shrinks its own error.
 """
 
 from __future__ import annotations
@@ -68,10 +49,7 @@ from utils.windows import (
     to_uniform,
 )
 
-# Fraction of a window the "peak" aggregation averages over: the worst 10% of
-# time samples. A fall or a stumble occupies a fraction of a six-second window,
-# so averaging over the whole window dilutes it with the ordinary walking
-# either side.
+# Worst fraction of time samples the "peak" score_agg averages over.
 _PEAK_FRACTION = 0.1
 
 # Labels carried per window. DROP means "not scoreable", not "normal".
@@ -94,21 +72,11 @@ class SessionReport:
     median_score: float
     max_score: float
     description: str = ""
-    # Fraction of this session's dist_mm samples that were sensor dropout and
-    # got clamped to the error floor. Only meaningful under --with-dist, and
-    # worth carrying because it is the one way the distance channel could be
-    # helping for the wrong reason.
-    dist_clipped_frac: float | None = None
+    dist_clipped_frac: float | None = None  # fraction of dist_mm clamped to the error floor
 
     @property
     def detected(self) -> bool:
-        """Session-level verdict: most of its scoreable windows were flagged.
-
-        Majority rather than "any window flagged": on a 20-30 s recording of
-        continuously abnormal gait, a detector that fires once and stays quiet
-        is not the same as one that recognises the gait, and "any" would call
-        every long recording anomalous on its worst second alone.
-        """
+        """Majority of its scoreable windows were flagged."""
         return self.flag_rate >= 0.5
 
     @property
@@ -179,20 +147,11 @@ def score_windows(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Reconstruct `x` and collapse the error into one anomaly score per window.
 
-    Three ways to collapse it, because the mean over every channel and sample
-    is not obviously the right one:
-
-    - `mean` - the plain mean squared error.
+    - `mean` - plain mean squared error.
     - `chan_norm` - each channel's error divided by its median on held-out
-      normal windows before averaging. Without it the channels with the
-      largest natural residual dominate the score whether or not they carry
-      the anomaly; with it, every channel reports in units of "how unusual is
-      this for this channel".
-    - `peak` - the mean over the worst tenth of time samples. A stumble or a
-      fall occupies a fraction of a window, and averaging across the whole
-      window dilutes it with the ordinary walking on either side.
-
-    `chan_scale` is fitted on normal training windows and passed in frozen.
+      normal windows (`chan_scale`) before averaging, so no channel's natural
+      residual dominates regardless of whether it carries the anomaly.
+    - `peak` - mean over the worst `_PEAK_FRACTION` of time samples.
     """
     model.eval()
     with torch.no_grad():
@@ -217,10 +176,8 @@ def score_windows(
 
 
 def load_descriptions(path: Path) -> dict[str, str]:
-    """Read the semicolon-separated anomaly descriptions keyed by recording number.
-
-    Purely for reporting - nothing downstream branches on the text. Missing or
-    unreadable file just means the reports carry no description column.
+    """Read the semicolon-separated anomaly descriptions keyed by recording
+    number. Purely for reporting; a missing file just yields no descriptions.
     """
     descriptions: dict[str, str] = {}
     if not path.exists():
@@ -236,10 +193,8 @@ def load_descriptions(path: Path) -> dict[str, str]:
 def load_series(paths: list[Path], config: StepAEConfig) -> list[UniformSeries]:
     """Load every session among `paths` and resample onto the uniform grid.
 
-    Step times are still computed, because `anchor="step"` needs them and they
-    cost little; with `anchor="slide"` nothing downstream reads them. A session
-    with no detected steps is therefore kept under sliding anchors - dropping
-    it would be the step detector silently deciding what gets evaluated.
+    A session with no detected steps is dropped only under `anchor="step"`,
+    which needs them; sliding anchors keep it.
     """
     sessions = group_sessions(sorted(paths))
     if not sessions:
@@ -265,13 +220,8 @@ def load_series(paths: list[Path], config: StepAEConfig) -> list[UniformSeries]:
 
 
 def _dist_clipped_frac(series: UniformSeries) -> float | None:
-    """How much of this session's distance trace was sensor dropout.
-
-    Readings under the error floor are clamped by `to_uniform`, so they survive
-    as an exact run at the floor value. The number matters for interpretation:
-    if dropout clustered in the abnormal recordings, a gain from the distance
-    channel could be the model spotting a failing sensor rather than a failing
-    gait.
+    """Fraction of this session's distance trace clamped to the error floor
+    by `to_uniform` (sensor dropout, not signal).
     """
     if DIST_CHANNEL not in series.channels:
         return None
@@ -280,10 +230,8 @@ def _dist_clipped_frac(series: UniformSeries) -> float | None:
 
 
 def label_windows(windows: WindowSet, series_list: list[UniformSeries]) -> np.ndarray:
-    """Assign LABEL_* per window from the session annotation and event markers.
-
-    Labelling happens on the *aligned* center, so a window is judged by the
-    stretch of signal the model actually saw rather than by where it was cut.
+    """Assign LABEL_* per window from the session annotation and event markers,
+    judged on the aligned center - what the model actually saw.
     """
     by_session = {s.session_id: s for s in series_list}
     half = windows.window_s / 2.0
@@ -300,24 +248,16 @@ def label_windows(windows: WindowSet, series_list: list[UniformSeries]) -> np.nd
             event_times = series.t[series.event_idx] if series.event_idx.size else np.empty(0)
             if np.any((event_times >= start) & (event_times <= end)):
                 labels[i] = LABEL_ANOMALY
-            # else: left as LABEL_DROP - unmarked stretches of an ann-1
-            # recording are unlabelled, not known-normal.
     return labels
 
 
 def split_train_val(
     windows: WindowSet, val_frac: float, window_s: float
 ) -> tuple[np.ndarray, list[str]]:
-    """Hold out the last `val_frac` of each training session, in time.
-
-    Not a random window-level split: neighbouring windows overlap heavily, so
-    random assignment puts near-duplicates on both sides and the validation
-    loss stops measuring generalization. Not a whole-session holdout either -
-    there are only two training sessions, so holding one out would calibrate
-    the threshold on a single walk.
-
-    A guard band of one full window on each side of the cut is discarded, so
-    no training window shares a single sample with a validation window.
+    """Hold out the last `val_frac` of each training session, in time - not a
+    random window-level split (neighbouring windows overlap heavily) or a
+    whole-session holdout (too few sessions). A one-window guard band at the
+    cut keeps train and val from sharing a sample.
     """
     split = np.full(windows.n_windows, "train", dtype=object)
     notes: list[str] = []
@@ -354,12 +294,10 @@ def run_ae_anomaly(
     np.random.seed(config.seed)
     descriptions = descriptions or {}
 
-    # Resolved across both splits at once: train and test must end up with the
-    # same channels, so the distance channel is only usable if every recording
+    # Resolved across both splits: dist_mm is only usable if every recording
     # on both sides carries it.
     config, dist_notes = resolve_with_dist(config, sorted(train_paths) + sorted(test_paths))
 
-    # --- fit: preprocessing and model, on normal training data only ---
     train_series = load_series(train_paths, config)
     train_windows = build_window_set(
         train_series,
@@ -378,8 +316,6 @@ def run_ae_anomaly(
     x_val = torch.from_numpy(train_windows.x[split == "val"]).float()
     train_loss, val_loss, best_epoch = _train(model, x_train, x_val, config)
 
-    # The per-channel scale for `chan_norm` is fitted on the held-out normal
-    # windows, then frozen - like the threshold, it never sees a test label.
     chan_scale = None
     if config.score_agg == "chan_norm":
         _, val_channel_error, _ = score_windows(
@@ -392,11 +328,8 @@ def run_ae_anomaly(
     )
     val_scores, _, _ = score_windows(model, train_windows.x[split == "val"], config, chan_scale)
 
-    # Threshold from held-out normal windows only: no test label is consulted,
-    # so this is an operating point a deployed detector could actually set.
     threshold = float(np.percentile(val_scores, config.threshold_pct))
 
-    # --- score: test data through the frozen pipeline ---
     test_series = load_series(test_paths, config)
     test_windows = build_window_set(
         test_series,
