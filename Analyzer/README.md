@@ -12,19 +12,11 @@ Analyzes IMU logs recorded from an instrumented walking cane.
 - `exp/` — one module per experiment (`ae_report.py` is the reporting half of `ae_anomaly.py`)
 - `out/` — generated plots and model checkpoints (git-ignored)
 
-The recordings themselves live outside the Analyzer, in `../Dataset/`:
-
-- `Dataset/data/` — every `rec_*.csv` recording, flat, no subfolders
-- `Dataset/split.csv` — `filename,split` table labelling each recording `train`, `test` or `walk`.
-  `train` (normal gait only) and `test` (labelled, normal and anomalous alike) are the pair
-  `ae-anomaly` fits and evaluates on; `walk` is the rest of the pool, with no role in that protocol.
-
-  `step-count`, `step-accuracy` and `step-ae` take `--split` to choose which of `Dataset/data` they
-  run over: the default, `normal`, is every `ann0`/legacy recording regardless of its `split.csv`
-  label — `train`, `walk`, and the handful of `test` recordings (such as the held-out normal control
-  session) that are `ann0` too — since ordinary gait analysis has no use for the labelled anomalies
-  `ae-anomaly` exists to score. `all` is the whole pool, anomalies included; a comma-separated subset
-  of `train`, `test`, `walk` selects by `split.csv` label directly, anomalies and all.
+The recordings themselves live outside the Analyzer, in `../Dataset/` — see
+[Dataset/README.md](../Dataset/README.md) for the file layout, the CSV format and the `split.csv` /
+`description.csv` metadata. In short: `--split` (on `step-count`, `step-accuracy`, `step-ae`) selects
+recordings from `Dataset/data` by their `Dataset/split.csv` label, defaulting to `normal` (every
+`ann0`/legacy recording); `ae-anomaly` always fits on `train` and scores `test`.
 
 ## Experiments
 
@@ -342,25 +334,8 @@ uv run main.py ae-anomaly --threshold-pct 99
 
 ## CSV Format
 
-A session is stored as one or more 30-second segment files, `rec_XXXXX_segNNN_annY.csv`, where `XXXXX`
-is the session index, `NNN` the zero-based segment number, and `Y ∈ {-1, 0, 1}` the stop annotation
-(shared by every segment of the session). `t_ms` restarts from 0 in each segment; consecutive segments
-of one session are read back-to-back as a single continuous recording by `load_session`.
-
-```
-t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm,event
-0,100,50,980,10,20,5,-1,0
-10,102,48,982,12,18,6,842.5,0
-20,101,49,981,11,19,5,843.1,1
-```
-
-- `t_ms` — milliseconds since the segment started
-- `ax/ay/az` — acceleration in millig (loaded as g)
-- `gx/gy/gz` — rotation in millidegrees/sec (loaded as deg/s)
-- `dist_mm` — distance in millimetres from the Modulino Distance sensor; `-1` if no reading is available yet
-- `event` — `1` on the first row sampled after a single click during recording, `0` otherwise
-
-`dist_mm` and `event` were added by later firmware revisions, so a recording may carry either, both or
-neither; `utils/io.py` resolves columns by name and exposes `has_dist` / `has_event`.
+See [Dataset/README.md](../Dataset/README.md) for the recording filename convention, the CSV column
+layout, and the `annY` annotation. `utils/io.py` resolves columns by name and exposes `has_dist` /
+`has_event`, so a recording missing either column still loads.
 
 Setup: `uv sync`, then run commands with `uv run`.

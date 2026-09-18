@@ -49,6 +49,7 @@ _D = StepAEConfig()
 DATASET_DIR = Path(__file__).resolve().parent.parent / "Dataset"
 DEFAULT_DATA_DIR = DATASET_DIR / "data"
 DEFAULT_SPLIT_CSV = DATASET_DIR / "split.csv"
+DEFAULT_DESCRIPTIONS_CSV = DATASET_DIR / "description.csv"
 
 # `normal` - every ann0/legacy recording, `train`/`test`/`walk`, `all` alike -
 # is the default pool for ordinary gait analysis: it is what the numbers in
@@ -560,7 +561,7 @@ def main() -> None:
     an_parser = sub.add_parser("ae-anomaly", help="Train the autoencoder on normal data and evaluate it as an anomaly detector on a labelled test set")
     an_parser.add_argument("--data", type=Path, default=DEFAULT_DATA_DIR, help=f"Directory of rec_*.csv recordings (default {DEFAULT_DATA_DIR})")
     an_parser.add_argument("--split-csv", type=Path, default=DEFAULT_SPLIT_CSV, help=f"filename,split table selecting the train/test recordings from --data (default {DEFAULT_SPLIT_CSV})")
-    an_parser.add_argument("--descriptions", type=str, default="description.csv", help="Semicolon-separated anomaly descriptions, for the report (default description.csv)")
+    an_parser.add_argument("--descriptions", type=str, default=DEFAULT_DESCRIPTIONS_CSV, help=f"Semicolon-separated anomaly descriptions, for the report (default {DEFAULT_DESCRIPTIONS_CSV})")
     an_parser.add_argument("--out-dir", type=str, default="out/ae_anomaly", help="Where to write the report, plots and CSVs (default out/ae_anomaly)")
     an_parser.add_argument("--anchor", choices=["step", "slide"], default=_D.anchor, help="Windowing scheme: slide avoids depending on a step detector that fails on abnormal gait (default slide)")
     an_parser.add_argument("--hop-s", type=float, default=DEFAULT_HOP_S, help=f"Sliding-window spacing in seconds (default {DEFAULT_HOP_S:g})")
