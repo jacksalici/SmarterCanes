@@ -75,10 +75,9 @@ at most ~10 s if WiFi is slow to associate) is a short transient and doesn't
 meaningfully change an hourly average; it's omitted as its own row.
 
 Note how close C/D are to G - a stuck SD card barely changes total current
-(it trades a small write-burst average for a solid LED), which is exactly
-why the earlier silent-write-failure bug was so hard to notice without
-instrumentation: a faulted recording draws essentially the same power as a
-healthy one.
+(it trades a small write-burst average for a solid LED): a faulted recording
+draws essentially the same power as a healthy one, so power draw alone can't
+be used to detect a write fault.
 
 ## 4. Estimated battery life
 

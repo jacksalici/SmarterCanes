@@ -21,28 +21,24 @@ Five-layer design:
    - Emits one event per `update()` call
 
 2. **StatusLed** (`StatusLed.h/.cpp`): Non-blocking LED blinker
-   - 3 fast blocking blinks (100 ms on/off) at boot as a startup indicator
-   - Blinks at a fixed 500 ms interval (once per second) while active (recording)
-   - While idle, a brief 100 ms heartbeat flash every 30s - distinguishes "idle" from "unpowered/frozen" without a full-time blink
-   - Solid on (no blinking) whenever a fault is active - `recorder.hasFault()` (an SD write/open failure mid-recording), or a boot-time init retry loop in `main.cpp` (SD card / IMU not responding) - regardless of the active/idle state, so a fault is visually distinct from either blink pattern
-   - `signal(Signal)` queues a one-shot, non-blocking pattern that preempts the idle/active visual until it finishes (but a fault still takes priority over it): `StopBlink` - 3 blinks (100 ms on/off), same cadence as the boot flash, played after either gesture that stops a recording; `EventBlink` - a quicker 2 blinks (60 ms on/off), played after a mid-recording event mark
-   - Driven by `recorder.isRecording()` / `recorder.hasFault()` every loop iteration, `signal()` calls from `main.cpp`'s button handling, and directly from `main.cpp`'s boot-time retry loop
+   - 3 fast blinks at boot; once-per-second blink while recording; a brief heartbeat flash every 30 s while idle
+   - Solid on whenever a fault is active (SD write/open failure, or IMU/SD not responding at boot), regardless of active/idle state
+   - `signal(Signal)` queues a one-shot pattern that preempts the idle/active visual: `StopBlink` (3 blinks) after a recording stops, `EventBlink` (2 quick blinks) after a mid-recording event mark — a fault still takes priority
 
 3. **ImuRecorder** (`ImuRecorder.h/.cpp`): IMU + distance sampling + file management
-   - Fixed 10 ms sample interval; samples are batched in a 2 KB RAM buffer and written to SD in bulk (at most every 250 ms or when the buffer fills), rather than one SD write per sample
-   - A session is split into 30-second segment files instead of one continuous file, so an SD fault only costs the segment in progress - every prior segment was already flushed and closed
-   - A failed write or file-open marks the segment dead and retries into a fresh one on a 500 ms backoff, so a transient fault (e.g. a jostled card connection) self-heals instead of silently halting data collection for the rest of the session
-   - Distance is read opportunistically (VL53L4CD updates slower than the sample rate); the last known reading is reused between updates, and `-1` is written if no reading has been received yet or the sensor is unavailable
-   - `annotateEvent()` flags the next sampled row's `event` column as `1` instead of interrupting the recording, so a button click mid-session can mark a moment of interest without stopping data collection; the flag is only cleared once it's actually written, so a click can't be lost even if it lands between two samples
-   - Auto-numbered sessions via index file (`/rec_index.txt`)
-   - On stop, every segment belonging to the session is renamed with the annotation suffix (`_ann-1.csv`, `_ann0.csv`, `_ann1.csv`)
-   - Periodic flush (1 sec) of whatever's already reached the file, on top of the buffer's own flush, to bound data loss on power failure
+   - Fixed 10 ms sample interval; samples are batched in a 2 KB RAM buffer and flushed to SD at most every 250 ms
+   - A session is split into 30-second segment files, so an SD fault only costs the segment in progress
+   - A failed write or file-open marks the segment dead and retries into a fresh one on a 500 ms backoff
+   - Distance is read opportunistically (VL53L4CD updates slower than the sample rate); `-1` is written if no reading is available
+   - `annotateEvent()` flags the next sampled row's `event` column instead of interrupting the recording
+   - Auto-numbered sessions via index file (`/rec_index.txt`); on stop, every segment is renamed with the annotation suffix (`_ann-1.csv`, `_ann0.csv`, `_ann1.csv`)
+   - Periodic flush (1 s) to bound data loss on power failure
 
 4. **Dashboard** (`Dashboard.h/.cpp`): WiFi + NTP + web UI for offloading recordings
-   - Connects to WiFi at boot using credentials read from `/.env` on the SD card (bounded ~10 s timeout); missing file or failure to connect is non-fatal — the device keeps recording standalone, it just skips starting the dashboard
-   - On connect, syncs time via NTP (`configTzTime`, Europe/Rome) so SD file timestamps are meaningful; NTP failure is also non-fatal
-   - Serves a single-page dashboard (`WebServer`, no auth, no JS) listing every recorded file with a Download link, a "Download all" streamed `.zip`, and a two-step "Delete all" action
-   - Every route refuses (503) while `recorder.isRecording()` is true, since a blocking HTTP request (e.g. a large download) would otherwise stall the 10 ms IMU sample loop
+   - Connects to WiFi at boot using credentials read from `/.env` on the SD card; missing file or failed connection is non-fatal — the device keeps recording standalone
+   - On connect, syncs time via NTP (`configTzTime`, Europe/Rome) so SD file timestamps are meaningful
+   - Serves a single-page dashboard (`WebServer`, no auth) listing every recorded file, with per-file download, a streamed "Download all" `.zip`, and a two-step "Delete all"
+   - Every route refuses (503) while recording, since a blocking HTTP request would otherwise stall the 10 ms sample loop
 
 5. **Main** (`main.cpp`): Event loop
    - Single click: start recording if idle; if already recording, mark an event on the CSV instead (LED: quick double blink)
@@ -112,23 +108,8 @@ Firmware logs all events with prefixes:
 
 ## CSV Format
 
-Each session is stored as one or more 30-second segment files, `rec_XXXXX_segNNN_annY.csv`, where `XXXXX` is the session index, `NNN` the zero-based segment number, and `Y ∈ {-1, 0, 1}` the stop annotation (shared by every segment of the session):
-
-```
-t_ms,ax_mg,ay_mg,az_mg,gx_mdps,gy_mdps,gz_mdps,dist_mm,event
-0,100,50,980,10,20,5,-1,0
-10,102,48,982,12,18,6,842.5,0
-20,101,49,981,11,19,5,843.1,1
-...
-```
-
-`t_ms` restarts from 0 in each segment (milliseconds since that segment, not the session, started); consecutive segments of the same session are meant to be read back-to-back as one continuous recording.
-
-- `t_ms`: Milliseconds since recording start
-- `ax/ay/az`: Acceleration in millig
-- `gx/gy/gz`: Rotation in millidegrees/sec
-- `dist_mm`: Distance in millimeters from the Modulino Distance sensor; `-1` if no reading is available yet
-- `event`: `1` on the first row sampled after a single click during recording (a user-marked moment of interest), `0` otherwise
+See [Dataset/README.md](../Dataset/README.md) for the recording filename convention, the CSV column
+layout, and the `annY` annotation.
 
 ## Related: `distance_test`
 
