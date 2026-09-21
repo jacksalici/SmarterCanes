@@ -1,4 +1,7 @@
-# Smarter Canes: Low-Cost Sensing for Step Counting and Self-Supervised Gait Assessment
+# Low-Cost Sensing for Step Counting and Self-Supervised Gait Assessment
+
+[![View on GitHub](https://img.shields.io/badge/GitHub-repository-181717?logo=github&logoColor=white)](https://github.com/jacksalici/SmarterCanes)
+[![Download ZIP](https://img.shields.io/badge/Download-ZIP-blue?logo=github&logoColor=white)](https://github.com/jacksalici/SmarterCanes/archive/refs/heads/main.zip)
 
 A low-cost instrumented walking cane — an IMU and a downward-facing time-of-flight distance sensor,
 logging to SD — paired with an analysis pipeline that counts steps and flags abnormal gait from an

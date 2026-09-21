@@ -1,4 +1,8 @@
-# SmartCane Dataset
+# The Dataset
+
+[![View on GitHub](https://img.shields.io/badge/GitHub-Dataset-181717?logo=github&logoColor=white)](https://github.com/jacksalici/SmarterCanes/tree/main/Dataset)
+[![Download folder](https://img.shields.io/badge/Download-Dataset_folder-blue?logo=github&logoColor=white)](https://minhaskamal.github.io/DownGit/#/home?url=https://github.com/jacksalici/SmarterCanes/tree/main/Dataset)
+[![Back to project](https://img.shields.io/badge/%E2%86%90-Project_overview-lightgrey)](../README.md)
 
 IMU recordings from an instrumented walking cane, and the metadata that labels them. Consumed by
 `../Analyzer` — see [Analyzer/README.md](../Analyzer/README.md) for the commands that read this data.

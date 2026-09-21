@@ -1,4 +1,8 @@
-# Lolin32 Lite IMU Recorder
+# ESP32 IMU Recorder
+
+[![View on GitHub](https://img.shields.io/badge/GitHub-Firmware-181717?logo=github&logoColor=white)](https://github.com/jacksalici/SmarterCanes/tree/main/Firmware)
+[![Download folder](https://img.shields.io/badge/Download-Firmware_folder-blue?logo=github&logoColor=white)](https://minhaskamal.github.io/DownGit/#/home?url=https://github.com/jacksalici/SmarterCanes/tree/main/Firmware)
+[![Back to project](https://img.shields.io/badge/%E2%86%90-Project_overview-lightgrey)](../README.md)
 
 A firmware for recording 6-axis IMU data (accel + gyro) plus distance-to-ground/obstacle to SD card, with button-based session control, an LED that blinks while recording (and idle-heartbeats/solid-faults/gesture-signals otherwise), and a WiFi dashboard to download and clear recordings.
 

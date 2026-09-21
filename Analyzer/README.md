@@ -1,4 +1,8 @@
-# SmartCane Analyzer
+# The Analyzer
+
+[![View on GitHub](https://img.shields.io/badge/GitHub-Analyzer-181717?logo=github&logoColor=white)](https://github.com/jacksalici/SmarterCanes/tree/main/Analyzer)
+[![Download folder](https://img.shields.io/badge/Download-Analyzer_folder-blue?logo=github&logoColor=white)](https://minhaskamal.github.io/DownGit/#/home?url=https://github.com/jacksalici/SmarterCanes/tree/main/Analyzer)
+[![Back to project](https://img.shields.io/badge/%E2%86%90-Project_overview-lightgrey)](../README.md)
 
 Analyzes IMU logs recorded from an instrumented walking cane.
 
