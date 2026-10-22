@@ -2,10 +2,13 @@
 
 [![View on GitHub](https://img.shields.io/badge/GitHub-repository-181717?logo=github&logoColor=white)](https://github.com/jacksalici/SmarterCanes)
 [![Download ZIP](https://img.shields.io/badge/Download-ZIP-blue?logo=github&logoColor=white)](https://github.com/jacksalici/SmarterCanes/archive/refs/heads/main.zip)
+[![Paper](https://img.shields.io/badge/Paper-IRIS%20UNIMORE-b31b1b?logo=readthedocs&logoColor=white)](https://iris.unimore.it/handle/11380/1422348)
 
 A low-cost instrumented walking cane — an IMU and a downward-facing time-of-flight distance sensor,
 logging to SD — paired with an analysis pipeline that counts steps and flags abnormal gait from an
 autoencoder trained only on normal walking.
+
+**The paper is available [here](https://iris.unimore.it/handle/11380/1422348).**
 
 The project has three parts:
 
