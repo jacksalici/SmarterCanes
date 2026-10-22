@@ -14,6 +14,7 @@ Analyzes IMU logs recorded from an instrumented walking cane.
   - `windows.py` — windowing preprocessing: resampling, step-anchored or sliding windowing, four alignment policies, normalization
   - `metrics.py` — ROC, precision-recall, AUPRC and threshold metrics over numpy
 - `exp/` — one module per experiment (`ae_report.py` is the reporting half of `ae_anomaly.py`)
+- `scripts/` — robustness analyses (seed variance, session-level CV, nested LOSO step counting); see [scripts/README.md](scripts/README.md)
 - `out/` — generated plots and model checkpoints (git-ignored)
 
 The recordings live outside the Analyzer, in `../Dataset/` — see
